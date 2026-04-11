@@ -1,5 +1,5 @@
 import * as core from '@actions/core'
-import { wait } from './wait.js'
+import { TelegramClient } from '@mtcute/node'
 
 /**
  * The main function for the action.
@@ -8,18 +8,23 @@ import { wait } from './wait.js'
  */
 export async function run(): Promise<void> {
   try {
-    const ms: string = core.getInput('milliseconds')
+    const apiId: string = core.getInput('api-id')
+    const apiHash: string = core.getInput('api-hash')
+    const botToken: string = core.getInput('bot-token')
+    const tg = new TelegramClient({
+      apiId: parseInt(apiId, 10),
+      apiHash: apiHash,
+      storage: 'bot-data/session'
+    })
 
-    // Debug logs are only output if the `ACTIONS_STEP_DEBUG` secret is true
-    core.debug(`Waiting ${ms} milliseconds ...`)
+    const user = await tg.start({ botToken: botToken })
 
-    // Log the current timestamp, wait, then log the new timestamp
-    core.debug(new Date().toTimeString())
-    await wait(parseInt(ms, 10))
-    core.debug(new Date().toTimeString())
+    core.debug(`Logged in as ${user.username} (${user.id})`)
 
-    // Set outputs for other workflow steps to use
-    core.setOutput('time', new Date().toTimeString())
+    const chatId: string = core.getInput('chat-id')
+    const files = core.getMultilineInput('files')
+
+    await tg.sendMediaGroup(chatId, files)
   } catch (error) {
     // Fail the workflow run if an error occurs
     if (error instanceof Error) core.setFailed(error.message)
