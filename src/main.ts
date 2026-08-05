@@ -3,35 +3,13 @@ import { glob } from 'glob'
 import * as path from 'node:path'
 import { InputMediaDocument, MemoryStorage, TelegramClient } from '@mtcute/node'
 import { NodeCryptoProvider } from '@mtcute/node/utils.js'
-import { IGE } from '@cryptography/aes'
-
-function wordsToBytes(words: Uint32Array): Uint8Array {
-  const o = new Uint8Array(words.byteLength)
-
-  const len = words.length * 4
-
-  for (let i = 0; i < len; ++i) {
-    o[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff
-  }
-
-  return o
-}
+import { initSync, SIMD_AVAILABLE } from '@mtcute/wasm'
+import mtcuteWasm from '@mtcute/wasm/mtcute.wasm'
+import mtcuteWasmSimd from '@mtcute/wasm/mtcute-simd.wasm'
 
 class ActionsCryptoProvider extends NodeCryptoProvider {
   async initialize() {
-    // do nothing
-  }
-  createAesIge(key: Uint8Array, iv: Uint8Array) {
-    return {
-      encrypt(data: Uint8Array): Uint8Array {
-        const ige = new IGE(key, iv)
-        return wordsToBytes(ige.encrypt(data))
-      },
-      decrypt(data: Uint8Array): Uint8Array {
-        const ige = new IGE(key, iv)
-        return wordsToBytes(ige.decrypt(data))
-      }
-    }
+    initSync(SIMD_AVAILABLE ? await mtcuteWasmSimd() : await mtcuteWasm())
   }
 }
 
