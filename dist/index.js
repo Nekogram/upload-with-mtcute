@@ -2543,7 +2543,13 @@ function requireRequest$1 () {
 	      } else if (typeof val[i] === 'object') {
 	        throw new InvalidArgumentError(`invalid ${key} header`)
 	      } else {
-	        arr.push(`${val[i]}`);
+	        // Coerce primitives (and reject unsafe coercions such as functions
+	        // with a crafted toString/Symbol.toPrimitive).
+	        const str = `${val[i]}`;
+	        if (!isValidHeaderValue(str)) {
+	          throw new InvalidArgumentError(`invalid ${key} header`)
+	        }
+	        arr.push(str);
 	      }
 	    }
 	    val = arr;
@@ -2554,7 +2560,12 @@ function requireRequest$1 () {
 	  } else if (val === null) {
 	    val = '';
 	  } else {
+	    // Coerce primitives (and reject unsafe coercions such as functions
+	    // with a crafted toString/Symbol.toPrimitive).
 	    val = `${val}`;
+	    if (!isValidHeaderValue(val)) {
+	      throw new InvalidArgumentError(`invalid ${key} header`)
+	    }
 	  }
 
 	  if (headerName === 'host') {
@@ -2690,15 +2701,24 @@ function requireDispatcherBase () {
 	const kOnDestroyed = Symbol('onDestroyed');
 	const kOnClosed = Symbol('onClosed');
 	const kInterceptedDispatch = Symbol('Intercepted Dispatch');
+	const kWebSocketOptions = Symbol('webSocketOptions');
 
 	class DispatcherBase extends Dispatcher {
-	  constructor () {
+	  constructor (opts) {
 	    super();
 
 	    this[kDestroyed] = false;
 	    this[kOnDestroyed] = null;
 	    this[kClosed] = false;
 	    this[kOnClosed] = [];
+	    this[kWebSocketOptions] = opts?.webSocket ?? {};
+	  }
+
+	  get webSocketOptions () {
+	    return {
+	      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
+	      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024
+	    }
 	  }
 
 	  get destroyed () {
@@ -3580,9 +3600,9 @@ var hasRequiredConstants$3;
 function requireConstants$3 () {
 	if (hasRequiredConstants$3) return constants$3;
 	hasRequiredConstants$3 = 1;
-	(function (exports$1) {
-		Object.defineProperty(exports$1, "__esModule", { value: true });
-		exports$1.SPECIAL_HEADERS = exports$1.HEADER_STATE = exports$1.MINOR = exports$1.MAJOR = exports$1.CONNECTION_TOKEN_CHARS = exports$1.HEADER_CHARS = exports$1.TOKEN = exports$1.STRICT_TOKEN = exports$1.HEX = exports$1.URL_CHAR = exports$1.STRICT_URL_CHAR = exports$1.USERINFO_CHARS = exports$1.MARK = exports$1.ALPHANUM = exports$1.NUM = exports$1.HEX_MAP = exports$1.NUM_MAP = exports$1.ALPHA = exports$1.FINISH = exports$1.H_METHOD_MAP = exports$1.METHOD_MAP = exports$1.METHODS_RTSP = exports$1.METHODS_ICE = exports$1.METHODS_HTTP = exports$1.METHODS = exports$1.LENIENT_FLAGS = exports$1.FLAGS = exports$1.TYPE = exports$1.ERROR = void 0;
+	(function (exports) {
+		Object.defineProperty(exports, "__esModule", { value: true });
+		exports.SPECIAL_HEADERS = exports.HEADER_STATE = exports.MINOR = exports.MAJOR = exports.CONNECTION_TOKEN_CHARS = exports.HEADER_CHARS = exports.TOKEN = exports.STRICT_TOKEN = exports.HEX = exports.URL_CHAR = exports.STRICT_URL_CHAR = exports.USERINFO_CHARS = exports.MARK = exports.ALPHANUM = exports.NUM = exports.HEX_MAP = exports.NUM_MAP = exports.ALPHA = exports.FINISH = exports.H_METHOD_MAP = exports.METHOD_MAP = exports.METHODS_RTSP = exports.METHODS_ICE = exports.METHODS_HTTP = exports.METHODS = exports.LENIENT_FLAGS = exports.FLAGS = exports.TYPE = exports.ERROR = void 0;
 		const utils_1 = requireUtils();
 		(function (ERROR) {
 		    ERROR[ERROR["OK"] = 0] = "OK";
@@ -3610,12 +3630,12 @@ function requireConstants$3 () {
 		    ERROR[ERROR["PAUSED_UPGRADE"] = 22] = "PAUSED_UPGRADE";
 		    ERROR[ERROR["PAUSED_H2_UPGRADE"] = 23] = "PAUSED_H2_UPGRADE";
 		    ERROR[ERROR["USER"] = 24] = "USER";
-		})(exports$1.ERROR || (exports$1.ERROR = {}));
+		})(exports.ERROR || (exports.ERROR = {}));
 		(function (TYPE) {
 		    TYPE[TYPE["BOTH"] = 0] = "BOTH";
 		    TYPE[TYPE["REQUEST"] = 1] = "REQUEST";
 		    TYPE[TYPE["RESPONSE"] = 2] = "RESPONSE";
-		})(exports$1.TYPE || (exports$1.TYPE = {}));
+		})(exports.TYPE || (exports.TYPE = {}));
 		(function (FLAGS) {
 		    FLAGS[FLAGS["CONNECTION_KEEP_ALIVE"] = 1] = "CONNECTION_KEEP_ALIVE";
 		    FLAGS[FLAGS["CONNECTION_CLOSE"] = 2] = "CONNECTION_CLOSE";
@@ -3627,12 +3647,12 @@ function requireConstants$3 () {
 		    FLAGS[FLAGS["TRAILING"] = 128] = "TRAILING";
 		    // 1 << 8 is unused
 		    FLAGS[FLAGS["TRANSFER_ENCODING"] = 512] = "TRANSFER_ENCODING";
-		})(exports$1.FLAGS || (exports$1.FLAGS = {}));
+		})(exports.FLAGS || (exports.FLAGS = {}));
 		(function (LENIENT_FLAGS) {
 		    LENIENT_FLAGS[LENIENT_FLAGS["HEADERS"] = 1] = "HEADERS";
 		    LENIENT_FLAGS[LENIENT_FLAGS["CHUNKED_LENGTH"] = 2] = "CHUNKED_LENGTH";
 		    LENIENT_FLAGS[LENIENT_FLAGS["KEEP_ALIVE"] = 4] = "KEEP_ALIVE";
-		})(exports$1.LENIENT_FLAGS || (exports$1.LENIENT_FLAGS = {}));
+		})(exports.LENIENT_FLAGS || (exports.LENIENT_FLAGS = {}));
 		var METHODS;
 		(function (METHODS) {
 		    METHODS[METHODS["DELETE"] = 0] = "DELETE";
@@ -3692,8 +3712,8 @@ function requireConstants$3 () {
 		    METHODS[METHODS["RECORD"] = 44] = "RECORD";
 		    /* RAOP */
 		    METHODS[METHODS["FLUSH"] = 45] = "FLUSH";
-		})(METHODS = exports$1.METHODS || (exports$1.METHODS = {}));
-		exports$1.METHODS_HTTP = [
+		})(METHODS = exports.METHODS || (exports.METHODS = {}));
+		exports.METHODS_HTTP = [
 		    METHODS.DELETE,
 		    METHODS.GET,
 		    METHODS.HEAD,
@@ -3731,10 +3751,10 @@ function requireConstants$3 () {
 		    // TODO(indutny): should we allow it with HTTP?
 		    METHODS.SOURCE,
 		];
-		exports$1.METHODS_ICE = [
+		exports.METHODS_ICE = [
 		    METHODS.SOURCE,
 		];
-		exports$1.METHODS_RTSP = [
+		exports.METHODS_RTSP = [
 		    METHODS.OPTIONS,
 		    METHODS.DESCRIBE,
 		    METHODS.ANNOUNCE,
@@ -3751,59 +3771,59 @@ function requireConstants$3 () {
 		    METHODS.GET,
 		    METHODS.POST,
 		];
-		exports$1.METHOD_MAP = utils_1.enumToMap(METHODS);
-		exports$1.H_METHOD_MAP = {};
-		Object.keys(exports$1.METHOD_MAP).forEach((key) => {
+		exports.METHOD_MAP = utils_1.enumToMap(METHODS);
+		exports.H_METHOD_MAP = {};
+		Object.keys(exports.METHOD_MAP).forEach((key) => {
 		    if (/^H/.test(key)) {
-		        exports$1.H_METHOD_MAP[key] = exports$1.METHOD_MAP[key];
+		        exports.H_METHOD_MAP[key] = exports.METHOD_MAP[key];
 		    }
 		});
 		(function (FINISH) {
 		    FINISH[FINISH["SAFE"] = 0] = "SAFE";
 		    FINISH[FINISH["SAFE_WITH_CB"] = 1] = "SAFE_WITH_CB";
 		    FINISH[FINISH["UNSAFE"] = 2] = "UNSAFE";
-		})(exports$1.FINISH || (exports$1.FINISH = {}));
-		exports$1.ALPHA = [];
+		})(exports.FINISH || (exports.FINISH = {}));
+		exports.ALPHA = [];
 		for (let i = 'A'.charCodeAt(0); i <= 'Z'.charCodeAt(0); i++) {
 		    // Upper case
-		    exports$1.ALPHA.push(String.fromCharCode(i));
+		    exports.ALPHA.push(String.fromCharCode(i));
 		    // Lower case
-		    exports$1.ALPHA.push(String.fromCharCode(i + 0x20));
+		    exports.ALPHA.push(String.fromCharCode(i + 0x20));
 		}
-		exports$1.NUM_MAP = {
+		exports.NUM_MAP = {
 		    0: 0, 1: 1, 2: 2, 3: 3, 4: 4,
 		    5: 5, 6: 6, 7: 7, 8: 8, 9: 9,
 		};
-		exports$1.HEX_MAP = {
+		exports.HEX_MAP = {
 		    0: 0, 1: 1, 2: 2, 3: 3, 4: 4,
 		    5: 5, 6: 6, 7: 7, 8: 8, 9: 9,
 		    A: 0XA, B: 0XB, C: 0XC, D: 0XD, E: 0XE, F: 0XF,
 		    a: 0xa, b: 0xb, c: 0xc, d: 0xd, e: 0xe, f: 0xf,
 		};
-		exports$1.NUM = [
+		exports.NUM = [
 		    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 		];
-		exports$1.ALPHANUM = exports$1.ALPHA.concat(exports$1.NUM);
-		exports$1.MARK = ['-', '_', '.', '!', '~', '*', '\'', '(', ')'];
-		exports$1.USERINFO_CHARS = exports$1.ALPHANUM
-		    .concat(exports$1.MARK)
+		exports.ALPHANUM = exports.ALPHA.concat(exports.NUM);
+		exports.MARK = ['-', '_', '.', '!', '~', '*', '\'', '(', ')'];
+		exports.USERINFO_CHARS = exports.ALPHANUM
+		    .concat(exports.MARK)
 		    .concat(['%', ';', ':', '&', '=', '+', '$', ',']);
 		// TODO(indutny): use RFC
-		exports$1.STRICT_URL_CHAR = [
+		exports.STRICT_URL_CHAR = [
 		    '!', '"', '$', '%', '&', '\'',
 		    '(', ')', '*', '+', ',', '-', '.', '/',
 		    ':', ';', '<', '=', '>',
 		    '@', '[', '\\', ']', '^', '_',
 		    '`',
 		    '{', '|', '}', '~',
-		].concat(exports$1.ALPHANUM);
-		exports$1.URL_CHAR = exports$1.STRICT_URL_CHAR
+		].concat(exports.ALPHANUM);
+		exports.URL_CHAR = exports.STRICT_URL_CHAR
 		    .concat(['\t', '\f']);
 		// All characters with 0x80 bit set to 1
 		for (let i = 0x80; i <= 0xff; i++) {
-		    exports$1.URL_CHAR.push(i);
+		    exports.URL_CHAR.push(i);
 		}
-		exports$1.HEX = exports$1.NUM.concat(['a', 'b', 'c', 'd', 'e', 'f', 'A', 'B', 'C', 'D', 'E', 'F']);
+		exports.HEX = exports.NUM.concat(['a', 'b', 'c', 'd', 'e', 'f', 'A', 'B', 'C', 'D', 'E', 'F']);
 		/* Tokens as defined by rfc 2616. Also lowercases them.
 		 *        token       = 1*<any CHAR except CTLs or separators>
 		 *     separators     = "(" | ")" | "<" | ">" | "@"
@@ -3811,27 +3831,27 @@ function requireConstants$3 () {
 		 *                    | "/" | "[" | "]" | "?" | "="
 		 *                    | "{" | "}" | SP | HT
 		 */
-		exports$1.STRICT_TOKEN = [
+		exports.STRICT_TOKEN = [
 		    '!', '#', '$', '%', '&', '\'',
 		    '*', '+', '-', '.',
 		    '^', '_', '`',
 		    '|', '~',
-		].concat(exports$1.ALPHANUM);
-		exports$1.TOKEN = exports$1.STRICT_TOKEN.concat([' ']);
+		].concat(exports.ALPHANUM);
+		exports.TOKEN = exports.STRICT_TOKEN.concat([' ']);
 		/*
 		 * Verify that a char is a valid visible (printable) US-ASCII
 		 * character or %x80-FF
 		 */
-		exports$1.HEADER_CHARS = ['\t'];
+		exports.HEADER_CHARS = ['\t'];
 		for (let i = 32; i <= 255; i++) {
 		    if (i !== 127) {
-		        exports$1.HEADER_CHARS.push(i);
+		        exports.HEADER_CHARS.push(i);
 		    }
 		}
 		// ',' = \x44
-		exports$1.CONNECTION_TOKEN_CHARS = exports$1.HEADER_CHARS.filter((c) => c !== 44);
-		exports$1.MAJOR = exports$1.NUM_MAP;
-		exports$1.MINOR = exports$1.MAJOR;
+		exports.CONNECTION_TOKEN_CHARS = exports.HEADER_CHARS.filter((c) => c !== 44);
+		exports.MAJOR = exports.NUM_MAP;
+		exports.MINOR = exports.MAJOR;
 		var HEADER_STATE;
 		(function (HEADER_STATE) {
 		    HEADER_STATE[HEADER_STATE["GENERAL"] = 0] = "GENERAL";
@@ -3843,8 +3863,8 @@ function requireConstants$3 () {
 		    HEADER_STATE[HEADER_STATE["CONNECTION_CLOSE"] = 6] = "CONNECTION_CLOSE";
 		    HEADER_STATE[HEADER_STATE["CONNECTION_UPGRADE"] = 7] = "CONNECTION_UPGRADE";
 		    HEADER_STATE[HEADER_STATE["TRANSFER_ENCODING_CHUNKED"] = 8] = "TRANSFER_ENCODING_CHUNKED";
-		})(HEADER_STATE = exports$1.HEADER_STATE || (exports$1.HEADER_STATE = {}));
-		exports$1.SPECIAL_HEADERS = {
+		})(HEADER_STATE = exports.HEADER_STATE || (exports.HEADER_STATE = {}));
+		exports.SPECIAL_HEADERS = {
 		    'connection': HEADER_STATE.CONNECTION,
 		    'content-length': HEADER_STATE.CONTENT_LENGTH,
 		    'proxy-connection': HEADER_STATE.CONNECTION,
@@ -8601,6 +8621,7 @@ function requireClientH1 () {
 	  RequestContentLengthMismatchError,
 	  ResponseContentLengthMismatchError,
 	  RequestAbortedError,
+	  InvalidArgumentError,
 	  HeadersTimeoutError,
 	  HeadersOverflowError,
 	  SocketError,
@@ -8648,6 +8669,9 @@ function requireClientH1 () {
 	const FastBuffer = Buffer[Symbol.species];
 	const addListener = util.addListener;
 	const removeAllListeners = util.removeAllListeners;
+	const kIdleSocketValidation = Symbol('kIdleSocketValidation');
+	const kIdleSocketValidationTimeout = Symbol('kIdleSocketValidationTimeout');
+	const kSocketUsed = Symbol('kSocketUsed');
 
 	let extractBody;
 
@@ -8735,10 +8759,10 @@ function requireClientH1 () {
 	const TIMEOUT_KEEP_ALIVE = 8 | USE_NATIVE_TIMER;
 
 	class Parser {
-	  constructor (client, socket, { exports: exports$1 }) {
+	  constructor (client, socket, { exports }) {
 	    assert(Number.isFinite(client[kMaxHeadersSize]) && client[kMaxHeadersSize] > 0);
 
-	    this.llhttp = exports$1;
+	    this.llhttp = exports;
 	    this.ptr = this.llhttp.llhttp_alloc(constants.TYPE.RESPONSE);
 	    this.client = client;
 	    this.socket = socket;
@@ -8870,27 +8894,69 @@ function requireClientH1 () {
 
 	      const offset = llhttp.llhttp_get_error_pos(this.ptr) - currentBufferPtr;
 
-	      if (ret === constants.ERROR.PAUSED_UPGRADE) {
-	        this.onUpgrade(data.slice(offset));
-	      } else if (ret === constants.ERROR.PAUSED) {
-	        this.paused = true;
-	        socket.unshift(data.slice(offset));
-	      } else if (ret !== constants.ERROR.OK) {
-	        const ptr = llhttp.llhttp_get_error_reason(this.ptr);
-	        let message = '';
-	        /* istanbul ignore else: difficult to make a test case for */
-	        if (ptr) {
-	          const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0);
-	          message =
-	            'Response does not match the HTTP/1.1 protocol (' +
-	            Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
-	            ')';
+	      if (ret !== constants.ERROR.OK) {
+	        const body = data.subarray(offset);
+
+	        if (ret === constants.ERROR.PAUSED_UPGRADE) {
+	          this.onUpgrade(body);
+	        } else if (ret === constants.ERROR.PAUSED) {
+	          this.paused = true;
+	          socket.unshift(body);
+	        } else {
+	          throw this.createError(ret, body)
 	        }
-	        throw new HTTPParserError(message, constants.ERROR[ret], data.slice(offset))
 	      }
 	    } catch (err) {
 	      util.destroy(socket, err);
 	    }
+	  }
+
+	  finish () {
+	    assert(currentParser === null);
+	    assert(this.ptr != null);
+	    assert(!this.paused);
+
+	    const { llhttp } = this;
+
+	    let ret;
+
+	    try {
+	      currentParser = this;
+	      ret = llhttp.llhttp_finish(this.ptr);
+	    } finally {
+	      currentParser = null;
+	    }
+
+	    if (ret === constants.ERROR.OK) {
+	      return null
+	    }
+
+	    if (ret === constants.ERROR.PAUSED || ret === constants.ERROR.PAUSED_UPGRADE) {
+	      this.paused = true;
+	      return null
+	    }
+
+	    return this.createError(ret, EMPTY_BUF)
+	  }
+
+	  createError (ret, data) {
+	    const { llhttp, contentLength, bytesRead } = this;
+
+	    if (contentLength && bytesRead !== parseInt(contentLength, 10)) {
+	      return new ResponseContentLengthMismatchError()
+	    }
+
+	    const ptr = llhttp.llhttp_get_error_reason(this.ptr);
+	    let message = '';
+	    if (ptr) {
+	      const len = new Uint8Array(llhttp.memory.buffer, ptr).indexOf(0);
+	      message =
+	        'Response does not match the HTTP/1.1 protocol (' +
+	        Buffer.from(llhttp.memory.buffer, ptr, len).toString() +
+	        ')';
+	    }
+
+	    return new HTTPParserError(message, constants.ERROR[ret], data)
 	  }
 
 	  destroy () {
@@ -8917,6 +8983,11 @@ function requireClientH1 () {
 
 	    /* istanbul ignore next: difficult to make a test case for */
 	    if (socket.destroyed) {
+	      return -1
+	    }
+
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
 	      return -1
 	    }
 
@@ -9020,6 +9091,11 @@ function requireClientH1 () {
 
 	    /* istanbul ignore next: difficult to make a test case for */
 	    if (socket.destroyed) {
+	      return -1
+	    }
+
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
 	      return -1
 	    }
 
@@ -9196,6 +9272,7 @@ function requireClientH1 () {
 	    request.onComplete(headers);
 
 	    client[kQueue][client[kRunningIdx]++] = null;
+	    socket[kSocketUsed] = true;
 
 	    if (socket[kWriting]) {
 	      assert(client[kRunning] === 0);
@@ -9254,6 +9331,9 @@ function requireClientH1 () {
 	  socket[kWriting] = false;
 	  socket[kReset] = false;
 	  socket[kBlocking] = false;
+	  socket[kIdleSocketValidation] = 0;
+	  socket[kIdleSocketValidationTimeout] = null;
+	  socket[kSocketUsed] = false;
 	  socket[kParser] = new Parser(client, socket, llhttpInstance);
 
 	  addListener(socket, 'error', function (err) {
@@ -9264,8 +9344,11 @@ function requireClientH1 () {
 	    // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
 	    // to the user.
 	    if (err.code === 'ECONNRESET' && parser.statusCode && !parser.shouldKeepAlive) {
-	      // We treat all incoming data so for as a valid response.
-	      parser.onMessageComplete();
+	      const parserErr = parser.finish();
+	      if (parserErr) {
+	        this[kError] = parserErr;
+	        this[kClient][kOnError](parserErr);
+	      }
 	      return
 	    }
 
@@ -9284,8 +9367,10 @@ function requireClientH1 () {
 	    const parser = this[kParser];
 
 	    if (parser.statusCode && !parser.shouldKeepAlive) {
-	      // We treat all incoming data so far as a valid response.
-	      parser.onMessageComplete();
+	      const parserErr = parser.finish();
+	      if (parserErr) {
+	        util.destroy(this, parserErr);
+	      }
 	      return
 	    }
 
@@ -9295,10 +9380,11 @@ function requireClientH1 () {
 	    const client = this[kClient];
 	    const parser = this[kParser];
 
+	    clearIdleSocketValidation(this);
+
 	    if (parser) {
 	      if (!this[kError] && parser.statusCode && !parser.shouldKeepAlive) {
-	        // We treat all incoming data so far as a valid response.
-	        parser.onMessageComplete();
+	        this[kError] = parser.finish() || this[kError];
 	      }
 
 	      this[kParser].destroy();
@@ -9361,7 +9447,7 @@ function requireClientH1 () {
 	      return socket.destroyed
 	    },
 	    busy (request) {
-	      if (socket[kWriting] || socket[kReset] || socket[kBlocking]) {
+	      if (socket[kWriting] || socket[kReset] || socket[kBlocking] || socket[kIdleSocketValidation] === 1) {
 	        return true
 	      }
 
@@ -9399,6 +9485,31 @@ function requireClientH1 () {
 	  }
 	}
 
+	function clearIdleSocketValidation (socket) {
+	  if (socket[kIdleSocketValidationTimeout]) {
+	    clearTimeout(socket[kIdleSocketValidationTimeout]);
+	    socket[kIdleSocketValidationTimeout] = null;
+	  }
+
+	  socket[kIdleSocketValidation] = 0;
+	}
+
+	function scheduleIdleSocketValidation (client, socket) {
+	  socket[kIdleSocketValidation] = 1;
+	  socket[kIdleSocketValidationTimeout] = setTimeout(() => {
+	    socket[kIdleSocketValidationTimeout] = null;
+	    socket[kIdleSocketValidation] = 2;
+
+	    if (client[kSocket] === socket && !socket.destroyed) {
+	      client[kResume]();
+	    }
+	  }, 0);
+	  socket[kIdleSocketValidationTimeout].unref?.();
+	}
+
+	/**
+	 * @param {import('./client.js')} client
+	 */
 	function resumeH1 (client) {
 	  const socket = client[kSocket];
 
@@ -9411,6 +9522,32 @@ function requireClientH1 () {
 	    } else if (socket[kNoRef] && socket.ref) {
 	      socket.ref();
 	      socket[kNoRef] = false;
+	    }
+
+	    if (client[kRunning] === 0 && client[kPending] > 0 && socket[kSocketUsed]) {
+	      if (socket[kIdleSocketValidation] === 0) {
+	        scheduleIdleSocketValidation(client, socket);
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+
+	      if (socket[kIdleSocketValidation] === 1) {
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+	    }
+
+	    if (client[kRunning] === 0) {
+	      socket[kParser].readMore();
+	      if (socket.destroyed) {
+	        return
+	      }
 	    }
 
 	    if (client[kSize] === 0) {
@@ -9468,8 +9605,16 @@ function requireClientH1 () {
 	    }
 	    body = bodyStream.stream;
 	    contentLength = bodyStream.length;
-	  } else if (util.isBlobLike(body) && request.contentType == null && body.type) {
-	    headers.push('content-type', body.type);
+	  } else if (util.isBlobLike(body) && request.contentType == null) {
+	    const contentType = body.type;
+	    if (contentType) {
+	      const contentTypeValue = `${contentType}`;
+	      if (!util.isValidHeaderValue(contentTypeValue)) {
+	        util.errorRequest(client, request, new InvalidArgumentError('invalid content-type header'));
+	        return false
+	      }
+	      headers.push('content-type', contentTypeValue);
+	    }
 	  }
 
 	  if (body && typeof body.read === 'function') {
@@ -9506,6 +9651,7 @@ function requireClientH1 () {
 	  }
 
 	  const socket = client[kSocket];
+	  clearIdleSocketValidation(socket);
 
 	  const abort = (err) => {
 	    if (request.aborted || request.completed) {
@@ -11076,9 +11222,10 @@ function requireClient () {
 	    autoSelectFamilyAttemptTimeout,
 	    // h2
 	    maxConcurrentStreams,
-	    allowH2
+	    allowH2,
+	    webSocket
 	  } = {}) {
-	    super();
+	    super({ webSocket });
 
 	    if (keepAlive !== undefined) {
 	      throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
@@ -11785,8 +11932,8 @@ function requirePoolBase () {
 	const kStats = Symbol('stats');
 
 	class PoolBase extends DispatcherBase {
-	  constructor () {
-	    super();
+	  constructor (opts) {
+	    super(opts);
 
 	    this[kQueue] = new FixedQueue();
 	    this[kClients] = [];
@@ -12005,8 +12152,6 @@ function requirePool () {
 	    allowH2,
 	    ...options
 	  } = {}) {
-	    super();
-
 	    if (connections != null && (!Number.isFinite(connections) || connections < 0)) {
 	      throw new InvalidArgumentError('invalid connections')
 	    }
@@ -12030,6 +12175,8 @@ function requirePool () {
 	        ...connect
 	      });
 	    }
+
+	    super(options);
 
 	    this[kInterceptors] = options.interceptors?.Pool && Array.isArray(options.interceptors.Pool)
 	      ? options.interceptors.Pool
@@ -12324,8 +12471,6 @@ function requireAgent () {
 
 	class Agent extends DispatcherBase {
 	  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, ...options } = {}) {
-	    super();
-
 	    if (typeof factory !== 'function') {
 	      throw new InvalidArgumentError('factory must be a function.')
 	    }
@@ -12337,6 +12482,8 @@ function requireAgent () {
 	    if (!Number.isInteger(maxRedirections) || maxRedirections < 0) {
 	      throw new InvalidArgumentError('maxRedirections must be a positive number')
 	    }
+
+	    super(options);
 
 	    if (connect && typeof connect !== 'function') {
 	      connect = { ...connect };
@@ -12902,6 +13049,28 @@ function requireRetryHandler () {
 	  return new Date(retryAfter).getTime() - current
 	}
 
+	function validatePartialResponseContentLength (headers, range, statusCode, retryCount) {
+	  const contentLength = headers['content-length'];
+	  if (contentLength == null) {
+	    return null
+	  }
+
+	  if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) {
+	    return null
+	  }
+
+	  const length = Number(contentLength);
+	  const expectedLength = range.end - range.start + 1;
+	  if (!Number.isFinite(length) || length !== expectedLength) {
+	    return new RequestRetryError('Content-Length mismatch', statusCode, {
+	      headers,
+	      data: { count: retryCount }
+	    })
+	  }
+
+	  return null
+	}
+
 	class RetryHandler {
 	  constructor (opts, handlers) {
 	    const { retryOptions, ...dispatchOpts } = opts;
@@ -13116,6 +13285,12 @@ function requireRetryHandler () {
 	        return false
 	      }
 
+	      const contentLengthError = validatePartialResponseContentLength(headers, contentRange, statusCode, this.retryCount);
+	      if (contentLengthError != null) {
+	        this.abort(contentLengthError);
+	        return false
+	      }
+
 	      const { start, size, end = size - 1 } = contentRange;
 
 	      assert(this.start === start, 'content-range mismatch');
@@ -13137,6 +13312,12 @@ function requireRetryHandler () {
 	            resume,
 	            statusMessage
 	          )
+	        }
+
+	        const contentLengthError = validatePartialResponseContentLength(headers, range, statusCode, this.retryCount);
+	        if (contentLengthError != null) {
+	          this.abort(contentLengthError);
+	          return false
 	        }
 
 	        const { start, size, end = size - 1 } = range;
@@ -23527,7 +23708,7 @@ function requireUtil$3 () {
 
 	    if (
 	      code < 0x20 || // exclude CTLs (0-31)
-	      code === 0x7F || // DEL
+	      code > 0x7E || // exclude DEL and non-ascii
 	      code === 0x3B // ;
 	    ) {
 	      throw new Error('Invalid cookie path')
@@ -23536,16 +23717,80 @@ function requireUtil$3 () {
 	}
 
 	/**
-	 * I have no idea why these values aren't allowed to be honest,
-	 * but Deno tests these. - Khafra
+	 * <let-dig> ::= <letter> | <digit>
+	 *
+	 * <letter> ::= any one of the 52 alphabetic characters A through Z in
+	 * upper case and a through z in lower case
+	 *
+	 * <digit> ::= any one of the ten digits 0 through 9r
+	 *
+	 * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+	 * @param {number} code
+	 */
+	function isLetterOrDigit (code) {
+	  return (
+	    (code >= 0x30 && code <= 0x39) || // 0-9
+	    (code >= 0x41 && code <= 0x5A) || // A-Z
+	    (code >= 0x61 && code <= 0x7A) // a-z
+	  )
+	}
+
+	/**
+	 * Validates a cookie domain against the "preferred name syntax".
+	 *
+	 * <domain>      ::= <subdomain> | " "
+	 * <subdomain>   ::= <label> | <subdomain> "." <label>
+	 * <label>       ::= <let-dig> [ [ <ldh-str> ] <let-dig> ]
+	 * <ldh-str>     ::= <let-dig-hyp> | <let-dig-hyp> <ldh-str>
+	 * <let-dig-hyp> ::= <let-dig> | "-"
+	 *
+	 * @see https://www.rfc-editor.org/rfc/rfc1034#section-3.5
+	 * @see https://www.rfc-editor.org/rfc/rfc1123#section-2.1
+	 * @see https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4
 	 * @param {string} domain
 	 */
 	function validateCookieDomain (domain) {
-	  if (
-	    domain.startsWith('-') ||
-	    domain.endsWith('.') ||
-	    domain.endsWith('-')
-	  ) {
+	  // <domain> ::= <subdomain> | " "
+	  if (domain === ' ') {
+	    return
+	  }
+
+	  if (domain.length > 255) {
+	    throw new Error('Invalid cookie domain')
+	  }
+
+	  let labelLength = 0;
+
+	  for (let i = 0; i < domain.length; ++i) {
+	    const code = domain.charCodeAt(i);
+
+	    if (code === 0x2E) {
+	      if (labelLength === 0) {
+	        throw new Error('Invalid cookie domain')
+	      }
+
+	      if (domain.charCodeAt(i - 1) === 0x2D) { // "-"
+	        throw new Error('Invalid cookie domain')
+	      }
+
+	      labelLength = 0;
+	      continue
+	    }
+
+	    if (labelLength === 0 && !isLetterOrDigit(code)) {
+	      throw new Error('Invalid cookie domain')
+	    }
+
+	    if (!isLetterOrDigit(code) && code !== 0x2D) { // "-"
+	      throw new Error('Invalid cookie domain')
+	    }
+
+	    if (++labelLength > 63) {
+	      throw new Error('Invalid cookie domain')
+	    }
+	  }
+
+	  if (labelLength === 0 || domain.charCodeAt(domain.length - 1) === 0x2D) { // "-"
 	    throw new Error('Invalid cookie domain')
 	  }
 	}
@@ -23688,7 +23933,13 @@ function requireUtil$3 () {
 
 	    const [key, ...value] = part.split('=');
 
-	    out.push(`${key.trim()}=${value.join('=')}`);
+	    const trimmedKey = key.trim();
+	    const joinedValue = value.join('=');
+
+	    validateCookieName(trimmedKey);
+	    validateCookieValue(joinedValue);
+
+	    out.push(`${trimmedKey}=${joinedValue}`);
 	  }
 
 	  return out.join('; ')
@@ -23987,32 +24238,25 @@ function requireParse () {
 	    // If the attribute-name case-insensitively matches the string
 	    // "SameSite", the user agent MUST process the cookie-av as follows:
 
-	    // 1. Let enforcement be "Default".
-	    let enforcement = 'Default';
-
 	    const attributeValueLowercase = attributeValue.toLowerCase();
-	    // 2. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "None", set enforcement to "None".
-	    if (attributeValueLowercase.includes('none')) {
-	      enforcement = 'None';
-	    }
 
-	    // 3. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Strict", set enforcement to "Strict".
-	    if (attributeValueLowercase.includes('strict')) {
-	      enforcement = 'Strict';
+	    // 1. If cookie-av's attribute-value is a case-insensitive match for
+	    //    "None", append an attribute to the cookie-attribute-list with an
+	    //    attribute-name of "SameSite" and an attribute-value of "None".
+	    if (attributeValueLowercase === 'none') {
+	      cookieAttributeList.sameSite = 'None';
+	    } else if (attributeValueLowercase === 'strict') {
+	      // 2. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Strict", append an attribute to the cookie-attribute-list with
+	      //    an attribute-name of "SameSite" and an attribute-value of
+	      //    "Strict".
+	      cookieAttributeList.sameSite = 'Strict';
+	    } else if (attributeValueLowercase === 'lax') {
+	      // 3. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Lax", append an attribute to the cookie-attribute-list with an
+	      //    attribute-name of "SameSite" and an attribute-value of "Lax".
+	      cookieAttributeList.sameSite = 'Lax';
 	    }
-
-	    // 4. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Lax", set enforcement to "Lax".
-	    if (attributeValueLowercase.includes('lax')) {
-	      enforcement = 'Lax';
-	    }
-
-	    // 5. Append an attribute to the cookie-attribute-list with an
-	    //    attribute-name of "SameSite" and an attribute-value of
-	    //    enforcement.
-	    cookieAttributeList.sameSite = enforcement;
 	  } else {
 	    cookieAttributeList.unparsed ??= [];
 
@@ -25478,40 +25722,35 @@ function requirePermessageDeflate () {
 	const kBuffer = Symbol('kBuffer');
 	const kLength = Symbol('kLength');
 
-	// Default maximum decompressed message size: 4 MB
-	const kDefaultMaxDecompressedSize = 4 * 1024 * 1024;
-
 	class PerMessageDeflate {
 	  /** @type {import('node:zlib').InflateRaw} */
 	  #inflate
 
 	  #options = {}
 
-	  /** @type {boolean} */
-	  #aborted = false
-
-	  /** @type {Function|null} */
-	  #currentCallback = null
+	  #maxPayloadSize = 0
 
 	  /**
 	   * @param {Map<string, string>} extensions
 	   */
-	  constructor (extensions) {
+	  constructor (extensions, options) {
 	    this.#options.serverNoContextTakeover = extensions.has('server_no_context_takeover');
 	    this.#options.serverMaxWindowBits = extensions.get('server_max_window_bits');
+
+	    this.#maxPayloadSize = options.maxPayloadSize;
 	  }
 
+	  /**
+	   * Decompress a compressed payload.
+	   * @param {Buffer} chunk Compressed data
+	   * @param {boolean} fin Final fragment flag
+	   * @param {Function} callback Callback function
+	   */
 	  decompress (chunk, fin, callback) {
 	    // An endpoint uses the following algorithm to decompress a message.
 	    // 1.  Append 4 octets of 0x00 0x00 0xff 0xff to the tail end of the
 	    //     payload of the message.
 	    // 2.  Decompress the resulting data using DEFLATE.
-
-	    if (this.#aborted) {
-	      callback(new MessageSizeExceededError());
-	      return
-	    }
-
 	    if (!this.#inflate) {
 	      let windowBits = Z_DEFAULT_WINDOWBITS;
 
@@ -25534,23 +25773,12 @@ function requirePermessageDeflate () {
 	      this.#inflate[kLength] = 0;
 
 	      this.#inflate.on('data', (data) => {
-	        if (this.#aborted) {
-	          return
-	        }
-
 	        this.#inflate[kLength] += data.length;
 
-	        if (this.#inflate[kLength] > kDefaultMaxDecompressedSize) {
-	          this.#aborted = true;
+	        if (this.#maxPayloadSize > 0 && this.#inflate[kLength] > this.#maxPayloadSize) {
+	          callback(new MessageSizeExceededError());
 	          this.#inflate.removeAllListeners();
-	          this.#inflate.destroy();
 	          this.#inflate = null;
-
-	          if (this.#currentCallback) {
-	            const cb = this.#currentCallback;
-	            this.#currentCallback = null;
-	            cb(new MessageSizeExceededError());
-	          }
 	          return
 	        }
 
@@ -25563,14 +25791,13 @@ function requirePermessageDeflate () {
 	      });
 	    }
 
-	    this.#currentCallback = callback;
 	    this.#inflate.write(chunk);
 	    if (fin) {
 	      this.#inflate.write(tail);
 	    }
 
 	    this.#inflate.flush(() => {
-	      if (this.#aborted || !this.#inflate) {
+	      if (!this.#inflate) {
 	        return
 	      }
 
@@ -25578,7 +25805,6 @@ function requirePermessageDeflate () {
 
 	      this.#inflate[kBuffer].length = 0;
 	      this.#inflate[kLength] = 0;
-	      this.#currentCallback = null;
 
 	      callback(null, full);
 	    });
@@ -25614,6 +25840,12 @@ function requireReceiver () {
 	const { WebsocketFrameSend } = requireFrame();
 	const { closeWebSocketConnection } = requireConnection();
 	const { PerMessageDeflate } = requirePermessageDeflate();
+	const { MessageSizeExceededError } = requireErrors();
+
+	function failWebsocketConnectionWithCode (ws, code, reason) {
+	  closeWebSocketConnection(ws, code, reason, Buffer.byteLength(reason));
+	  failWebsocketConnection(ws, reason);
+	}
 
 	// This code was influenced by ws released under the MIT license.
 	// Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
@@ -25622,6 +25854,7 @@ function requireReceiver () {
 
 	class ByteParser extends Writable {
 	  #buffers = []
+	  #fragmentsBytes = 0
 	  #byteOffset = 0
 	  #loop = false
 
@@ -25633,18 +25866,27 @@ function requireReceiver () {
 	  /** @type {Map<string, PerMessageDeflate>} */
 	  #extensions
 
+	  /** @type {number} */
+	  #maxFragments
+
+	  /** @type {number} */
+	  #maxPayloadSize
+
 	  /**
 	   * @param {import('./websocket').WebSocket} ws
 	   * @param {Map<string, string>|null} extensions
+	   * @param {{ maxFragments?: number, maxPayloadSize?: number }} [options]
 	   */
-	  constructor (ws, extensions) {
+	  constructor (ws, extensions, options = {}) {
 	    super();
 
 	    this.ws = ws;
 	    this.#extensions = extensions == null ? new Map() : extensions;
+	    this.#maxFragments = options.maxFragments ?? 0;
+	    this.#maxPayloadSize = options.maxPayloadSize ?? 0;
 
 	    if (this.#extensions.has('permessage-deflate')) {
-	      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions));
+	      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions, options));
 	    }
 	  }
 
@@ -25658,6 +25900,19 @@ function requireReceiver () {
 	    this.#loop = true;
 
 	    this.run(callback);
+	  }
+
+	  #validatePayloadLength () {
+	    if (
+	      this.#maxPayloadSize > 0 &&
+	      !isControlFrame(this.#info.opcode) &&
+	      this.#info.payloadLength + this.#fragmentsBytes > this.#maxPayloadSize
+	    ) {
+	      failWebsocketConnectionWithCode(this.ws, 1009, 'Payload size exceeds maximum allowed size');
+	      return false
+	    }
+
+	    return true
 	  }
 
 	  /**
@@ -25748,6 +26003,10 @@ function requireReceiver () {
 	        if (payloadLength <= 125) {
 	          this.#info.payloadLength = payloadLength;
 	          this.#state = parserStates.READ_DATA;
+
+	          if (!this.#validatePayloadLength()) {
+	            return
+	          }
 	        } else if (payloadLength === 126) {
 	          this.#state = parserStates.PAYLOADLENGTH_16;
 	        } else if (payloadLength === 127) {
@@ -25772,6 +26031,10 @@ function requireReceiver () {
 
 	        this.#info.payloadLength = buffer.readUInt16BE(0);
 	        this.#state = parserStates.READ_DATA;
+
+	        if (!this.#validatePayloadLength()) {
+	          return
+	        }
 	      } else if (this.#state === parserStates.PAYLOADLENGTH_64) {
 	        if (this.#byteOffset < 8) {
 	          return callback()
@@ -25794,6 +26057,10 @@ function requireReceiver () {
 
 	        this.#info.payloadLength = lower;
 	        this.#state = parserStates.READ_DATA;
+
+	        if (!this.#validatePayloadLength()) {
+	          return
+	        }
 	      } else if (this.#state === parserStates.READ_DATA) {
 	        if (this.#byteOffset < this.#info.payloadLength) {
 	          return callback()
@@ -25806,42 +26073,58 @@ function requireReceiver () {
 	          this.#state = parserStates.INFO;
 	        } else {
 	          if (!this.#info.compressed) {
-	            this.#fragments.push(body);
+	            if (!this.writeFragments(body)) {
+	              return
+	            }
+
+	            if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
+	              failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
+	              return
+	            }
 
 	            // If the frame is not fragmented, a message has been received.
 	            // If the frame is fragmented, it will terminate with a fin bit set
 	            // and an opcode of 0 (continuation), therefore we handle that when
 	            // parsing continuation frames, not here.
 	            if (!this.#info.fragmented && this.#info.fin) {
-	              const fullMessage = Buffer.concat(this.#fragments);
-	              websocketMessageReceived(this.ws, this.#info.binaryType, fullMessage);
-	              this.#fragments.length = 0;
+	              websocketMessageReceived(this.ws, this.#info.binaryType, this.consumeFragments());
 	            }
 
 	            this.#state = parserStates.INFO;
 	          } else {
-	            this.#extensions.get('permessage-deflate').decompress(body, this.#info.fin, (error, data) => {
-	              if (error) {
-	                failWebsocketConnection(this.ws, error.message);
-	                return
-	              }
+	            this.#extensions.get('permessage-deflate').decompress(
+	              body,
+	              this.#info.fin,
+	              (error, data) => {
+	                if (error) {
+	                  const code = error instanceof MessageSizeExceededError ? 1009 : 1007;
+	                  failWebsocketConnectionWithCode(this.ws, code, error.message);
+	                  return
+	                }
 
-	              this.#fragments.push(data);
+	                if (!this.writeFragments(data)) {
+	                  return
+	                }
 
-	              if (!this.#info.fin) {
-	                this.#state = parserStates.INFO;
+	                if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
+	                  failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
+	                  return
+	                }
+
+	                if (!this.#info.fin) {
+	                  this.#state = parserStates.INFO;
+	                  this.#loop = true;
+	                  this.run(callback);
+	                  return
+	                }
+
+	                websocketMessageReceived(this.ws, this.#info.binaryType, this.consumeFragments());
+
 	                this.#loop = true;
+	                this.#state = parserStates.INFO;
 	                this.run(callback);
-	                return
 	              }
-
-	              websocketMessageReceived(this.ws, this.#info.binaryType, Buffer.concat(this.#fragments));
-
-	              this.#loop = true;
-	              this.#state = parserStates.INFO;
-	              this.#fragments.length = 0;
-	              this.run(callback);
-	            });
+	            );
 
 	            this.#loop = false;
 	            break
@@ -25891,6 +26174,35 @@ function requireReceiver () {
 	    this.#byteOffset -= n;
 
 	    return buffer
+	  }
+
+	  writeFragments (fragment) {
+	    if (
+	      this.#maxFragments > 0 &&
+	      this.#fragments.length === this.#maxFragments
+	    ) {
+	      failWebsocketConnectionWithCode(this.ws, 1008, 'Too many message fragments');
+	      return false
+	    }
+
+	    this.#fragmentsBytes += fragment.length;
+	    this.#fragments.push(fragment);
+	    return true
+	  }
+
+	  consumeFragments () {
+	    const fragments = this.#fragments;
+
+	    if (fragments.length === 1) {
+	      this.#fragmentsBytes = 0;
+	      return fragments.shift()
+	    }
+
+	    const output = Buffer.concat(fragments, this.#fragmentsBytes);
+	    this.#fragments = [];
+	    this.#fragmentsBytes = 0;
+
+	    return output
 	  }
 
 	  parseCloseBody (data) {
@@ -26578,7 +26890,14 @@ function requireWebsocket () {
 	    // once this happens, the connection is open
 	    this[kResponse] = response;
 
-	    const parser = new ByteParser(this, parsedExtensions);
+	    const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions;
+	    const maxFragments = webSocketOptions?.maxFragments;
+	    const maxPayloadSize = webSocketOptions?.maxPayloadSize;
+
+	    const parser = new ByteParser(this, parsedExtensions, {
+	      maxFragments,
+	      maxPayloadSize
+	    });
 	    parser.on('drain', onParserDrain);
 	    parser.on('error', onParserError.bind(this));
 
@@ -28179,6 +28498,20 @@ function requireBraceExpansion () {
 	var escComma = '\0COMMA'+Math.random()+'\0';
 	var escPeriod = '\0PERIOD'+Math.random()+'\0';
 
+	var EXPANSION_MAX = 100000;
+
+	// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
+	// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
+	// truncated to 100k results - while making every result ~1500 characters
+	// long. The result set, and the intermediate arrays built while combining
+	// brace sets, then grow large enough to exhaust memory and crash the process
+	// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
+	// characters the accumulator may hold at any point, so memory stays flat no
+	// matter how many brace groups are chained. The limit sits well above any
+	// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+	// characters) so legitimate input is unaffected.
+	var EXPANSION_MAX_LENGTH = 4000000;
+
 	function numeric(str) {
 	  return parseInt(str, 10) == str
 	    ? parseInt(str, 10)
@@ -28232,9 +28565,13 @@ function requireBraceExpansion () {
 	  return parts;
 	}
 
-	function expandTop(str) {
+	function expandTop(str, options) {
 	  if (!str)
 	    return [];
+
+	  options = options || {};
+	  var max = options.max == null ? EXPANSION_MAX : options.max;
+	  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
 
 	  // I don't know why Bash 4.3 does this, but it does.
 	  // Anything starting with {} will have the first two bytes preserved
@@ -28246,7 +28583,7 @@ function requireBraceExpansion () {
 	    str = '\\{\\}' + str.substr(2);
 	  }
 
-	  return expand(escapeBraces(str), true).map(unescapeBraces);
+	  return expand(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
 	}
 
 	function embrace(str) {
@@ -28263,24 +28600,144 @@ function requireBraceExpansion () {
 	  return i >= y;
 	}
 
-	function expand(str, isTop) {
-	  var expansions = [];
-
-	  var m = balanced('{', '}', str);
-	  if (!m) return [str];
-
-	  // no need to expand pre, since it is guaranteed to be free of brace-sets
-	  var pre = m.pre;
-	  var post = m.post.length
-	    ? expand(m.post, false)
-	    : [''];
-
-	  if (/\$$/.test(m.pre)) {    
-	    for (var k = 0; k < post.length; k++) {
-	      var expansion = pre+ '{' + m.body + '}' + post[k];
-	      expansions.push(expansion);
+	// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
+	// number of results at `max` and the total number of characters at `maxLength`.
+	// This is the one place output grows, so bounding it here keeps the single
+	// accumulator - and therefore memory - flat regardless of how many brace groups
+	// are combined (CVE-2026-14257).
+	function combine(
+	  acc,
+	  pre,
+	  values,
+	  max,
+	  maxLength,
+	  dropEmpties
+	) {
+	  var out = [];
+	  var length = 0;
+	  for (var a = 0; a < acc.length; a++) {
+	    for (var v = 0; v < values.length; v++) {
+	      if (out.length >= max) return out
+	      var expansion = acc[a] + pre + values[v];
+	      // Bash drops empty results at the top level. Skip them before they count
+	      // against `max`, so `max` bounds the number of *kept* results.
+	      if (dropEmpties && !expansion) continue
+	      if (length + expansion.length > maxLength) return out
+	      out.push(expansion);
+	      length += expansion.length;
 	    }
-	  } else {
+	  }
+	  return out
+	}
+
+	// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
+	// sequence body.
+	function expandSequence(
+	  body,
+	  isAlphaSequence,
+	  max,
+	  maxLength
+	) {
+	  var n = body.split(/\.\./);
+	  var N = [];
+	  // A sequence body always splits into two or three parts, but the compiler
+	  // can't know that.
+	  /* c8 ignore start */
+	  if (n[0] === undefined || n[1] === undefined) {
+	    return N
+	  }
+	  /* c8 ignore stop */
+	  var x = numeric(n[0]);
+	  var y = numeric(n[1]);
+	  var width = Math.max(n[0].length, n[1].length);
+	  var incr =
+	    n.length === 3 && n[2] !== undefined ?
+	      Math.max(Math.abs(numeric(n[2])), 1)
+	    : 1;
+	  var test = lte;
+	  var reverse = y < x;
+	  if (reverse) {
+	    incr *= -1;
+	    test = gte;
+	  }
+	  var pad = n.some(isPadded);
+
+	  var length = 0;
+	  for (var i = x; test(i, y) && N.length < max; i += incr) {
+	    var c;
+	    if (isAlphaSequence) {
+	      c = String.fromCharCode(i);
+	      if (c === '\\') {
+	        c = '';
+	      }
+	    } else {
+	      c = String(i);
+	      if (pad) {
+	        var need = width - c.length;
+	        if (need > 0) {
+	          var z = new Array(need + 1).join('0');
+	          if (i < 0) {
+	            c = '-' + z + c.slice(1);
+	          } else {
+	            c = z + c;
+	          }
+	        }
+	      }
+	    }
+	    if (length + c.length > maxLength) break
+	    N.push(c);
+	    length += c.length;
+	  }
+	  return N
+	}
+
+	function expand(
+	  str,
+	  max,
+	  maxLength,
+	  isTop
+	) {
+	  // Consume the string's top-level brace groups left to right, threading a
+	  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
+	  // rather than recursing on `m.post` once per group - keeps the native stack
+	  // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
+	  // longer overflow the stack, and leaves a single accumulator whose size
+	  // `maxLength` bounds directly (CVE-2026-14257).
+	  var acc = [''];
+
+	  // Bash drops empty results, but only when the *first* top-level group is a
+	  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
+	  // is on the final strings, so it is applied to whichever `combine` produces
+	  // them (the one with no brace set left in the tail).
+	  var dropEmpties = false;
+	  var firstGroup = true;
+
+	  for (;;) {
+	    const m = balanced('{', '}', str);
+
+	    // No brace set left: the rest of the string is literal.
+	    if (!m) {
+	      return combine(acc, str, [''], max, maxLength, dropEmpties)
+	    }
+
+	    // no need to expand pre, since it is guaranteed to be free of brace-sets
+	    const pre = m.pre;
+
+	    if (/\$$/.test(pre)) {
+	      acc = combine(
+	        acc,
+	        pre + '{' + m.body + '}',
+	        [''],
+	        max,
+	        maxLength,
+	        dropEmpties && !m.post.length
+	      );
+	      firstGroup = false;
+	      if (!m.post.length) break
+	      str = m.post;
+	      continue
+	    }
+
 	    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
 	    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
 	    var isSequence = isNumericSequence || isAlphaSequence;
@@ -28289,87 +28746,85 @@ function requireBraceExpansion () {
 	      // {a},b}
 	      if (m.post.match(/,(?!,).*\}/)) {
 	        str = m.pre + '{' + m.body + escClose + m.post;
-	        return expand(str);
+	        isTop = true;
+	        continue;
 	      }
-	      return [str];
+	      // Nothing here expands, so the whole remaining string is literal.
+	      return combine(
+	        acc,
+	        pre + '{' + m.body + '}' + m.post,
+	        [''],
+	        max,
+	        maxLength,
+	        dropEmpties
+	      )
 	    }
 
-	    var n;
+	    if (firstGroup) {
+	      dropEmpties = isTop && !isSequence;
+	      firstGroup = false;
+	    }
+
+	    var values;
 	    if (isSequence) {
-	      n = m.body.split(/\.\./);
+	      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
 	    } else {
-	      n = parseCommaParts(m.body);
-	      if (n.length === 1) {
+	      var n = parseCommaParts(m.body);
+	      if (n.length === 1 && n[0] !== undefined) {
 	        // x{{a,b}}y ==> x{a}y x{b}y
-	        n = expand(n[0], false).map(embrace);
+	        n = expand(n[0], max, maxLength, false).map(embrace);
+	        //XXX is this necessary? Can't seem to hit it in tests.
+	        /* c8 ignore start */
 	        if (n.length === 1) {
-	          return post.map(function(p) {
-	            return m.pre + n[0] + p;
-	          });
+	          acc = combine(
+	            acc,
+	            pre + n[0],
+	            [''],
+	            max,
+	            maxLength,
+	            dropEmpties && !m.post.length
+	          );
+	          if (!m.post.length) break
+	          str = m.post;
+	          continue
+	        }
+	        /* c8 ignore stop */
+	      }
+
+	      // Values that `combine` is going to drop as empty produce no result, so
+	      // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
+	      // would stop at `['a', '']` and yield one result instead of two. Skipping
+	      // them outright keeps `values` bounded while leaving `max` a bound on
+	      // *kept* results.
+	      var dropsEmpties = dropEmpties && !m.post.length && !pre;
+	      for (var d = 0; dropsEmpties && d < acc.length; d++) {
+	        if (acc[d]) {
+	          dropsEmpties = false;
 	        }
 	      }
-	    }
 
-	    // at this point, n is the parts, and we know it's not a comma set
-	    // with a single entry.
-	    var N;
-
-	    if (isSequence) {
-	      var x = numeric(n[0]);
-	      var y = numeric(n[1]);
-	      var width = Math.max(n[0].length, n[1].length);
-	      var incr = n.length == 3
-	        ? Math.max(Math.abs(numeric(n[2])), 1)
-	        : 1;
-	      var test = lte;
-	      var reverse = y < x;
-	      if (reverse) {
-	        incr *= -1;
-	        test = gte;
-	      }
-	      var pad = n.some(isPadded);
-
-	      N = [];
-
-	      for (var i = x; test(i, y); i += incr) {
-	        var c;
-	        if (isAlphaSequence) {
-	          c = String.fromCharCode(i);
-	          if (c === '\\')
-	            c = '';
-	        } else {
-	          c = String(i);
-	          if (pad) {
-	            var need = width - c.length;
-	            if (need > 0) {
-	              var z = new Array(need + 1).join('0');
-	              if (i < 0)
-	                c = '-' + z + c.slice(1);
-	              else
-	                c = z + c;
-	            }
+	      values = [];
+	      var valuesLength = 0;
+	      outer: for (var j = 0; j < n.length; j++) {
+	        var expanded = expand(n[j], max, maxLength, false);
+	        for (var k = 0; k < expanded.length; k++) {
+	          var v = expanded[k];
+	          if (dropsEmpties && !v) continue
+	          if (values.length >= max || valuesLength + v.length > maxLength) {
+	            break outer
 	          }
+	          values.push(v);
+	          valuesLength += v.length;
 	        }
-	        N.push(c);
-	      }
-	    } else {
-	      N = [];
-
-	      for (var j = 0; j < n.length; j++) {
-	        N.push.apply(N, expand(n[j], false));
 	      }
 	    }
 
-	    for (var j = 0; j < N.length; j++) {
-	      for (var k = 0; k < post.length; k++) {
-	        var expansion = pre + N[j] + post[k];
-	        if (!isTop || isSequence || expansion)
-	          expansions.push(expansion);
-	      }
-	    }
+	    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length);
+	    if (!m.post.length) break
+	    str = m.post;
 	  }
 
-	  return expansions;
+	  return acc
 	}
 	return braceExpansion;
 }
@@ -36146,6 +36601,9 @@ const glob = Object.assign(glob_, {
 });
 glob.glob = glob;
 
+function noop() {
+}
+
 function compare(a, b) {
   if (a.length < b.length) return -1;
   if (a.length > b.length) return 1;
@@ -37239,6 +37697,24 @@ class CustomMap {
   get(key) {
     return this.#map.get(this.#mapperTo(key));
   }
+  getOrInsert(key, defaultValue) {
+    const internalKey = this.#mapperTo(key);
+    let value = this.#map.get(internalKey);
+    if (value == null) {
+      value = defaultValue;
+      this.#map.set(internalKey, value);
+    }
+    return value;
+  }
+  getOrInsertComputed(key, callback) {
+    const internalKey = this.#mapperTo(key);
+    let value = this.#map.get(internalKey);
+    if (value == null) {
+      value = callback(key);
+      this.#map.set(internalKey, value);
+    }
+    return value;
+  }
   has(key) {
     return this.#map.has(this.#mapperTo(key));
   }
@@ -37542,10 +38018,15 @@ function asyncResettable(func) {
       return runningPromise;
     }
     runningPromise = func(...args);
-    void runningPromise.then(() => {
-      runningPromise = null;
-      finished = true;
-    });
+    void runningPromise.then(
+      () => {
+        runningPromise = null;
+        finished = true;
+      },
+      () => {
+        runningPromise = null;
+      }
+    );
     return runningPromise;
   };
   return {
@@ -40047,9 +40528,9 @@ var m$1 = {
   3552332666: function(r) {
     return { _: "userEmpty", id: r.int53() };
   },
-  829899656: function(r) {
+  2981678211: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "user", self: !!(flags & 1024), contact: !!(flags & 2048), mutualContact: !!(flags & 4096), deleted: !!(flags & 8192), bot: !!(flags & 16384), botChatHistory: !!(flags & 32768), botNochats: !!(flags & 65536), verified: !!(flags & 131072), restricted: !!(flags & 262144), min: !!(flags & 1048576), botInlineGeo: !!(flags & 2097152), support: !!(flags & 8388608), scam: !!(flags & 16777216), applyMinPhoto: !!(flags & 33554432), fake: !!(flags & 67108864), botAttachMenu: !!(flags & 134217728), premium: !!(flags & 268435456), attachMenuEnabled: !!(flags & 536870912), botCanEdit: !!(flags2 & 2), closeFriend: !!(flags2 & 4), storiesHidden: !!(flags2 & 8), storiesUnavailable: !!(flags2 & 16), contactRequirePremium: !!(flags2 & 1024), botBusiness: !!(flags2 & 2048), botHasMainApp: !!(flags2 & 8192), botForumView: !!(flags2 & 65536), botForumCanManageTopics: !!(flags2 & 131072), botCanManageBots: !!(flags2 & 262144), id: r.int53(), accessHash: flags & 1 ? r.long() : void 0, firstName: flags & 2 ? r.string() : void 0, lastName: flags & 4 ? r.string() : void 0, username: flags & 8 ? r.string() : void 0, phone: flags & 16 ? r.string() : void 0, photo: flags & 32 ? r.object() : void 0, status: flags & 64 ? r.object() : void 0, botInfoVersion: flags & 16384 ? r.int() : void 0, restrictionReason: flags & 262144 ? r.vector(r.object) : void 0, botInlinePlaceholder: flags & 524288 ? r.string() : void 0, langCode: flags & 4194304 ? r.string() : void 0, emojiStatus: flags & 1073741824 ? r.object() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 32 ? r.object() : void 0, color: flags2 & 256 ? r.object() : void 0, profileColor: flags2 & 512 ? r.object() : void 0, botActiveUsers: flags2 & 4096 ? r.int() : void 0, botVerificationIcon: flags2 & 16384 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 32768 ? r.long() : void 0 };
+    return { _: "user", self: !!(flags & 1024), contact: !!(flags & 2048), mutualContact: !!(flags & 4096), deleted: !!(flags & 8192), bot: !!(flags & 16384), botChatHistory: !!(flags & 32768), botNochats: !!(flags & 65536), verified: !!(flags & 131072), restricted: !!(flags & 262144), min: !!(flags & 1048576), botInlineGeo: !!(flags & 2097152), support: !!(flags & 8388608), scam: !!(flags & 16777216), applyMinPhoto: !!(flags & 33554432), fake: !!(flags & 67108864), botAttachMenu: !!(flags & 134217728), premium: !!(flags & 268435456), attachMenuEnabled: !!(flags & 536870912), botCanEdit: !!(flags2 & 2), closeFriend: !!(flags2 & 4), storiesHidden: !!(flags2 & 8), storiesUnavailable: !!(flags2 & 16), contactRequirePremium: !!(flags2 & 1024), botBusiness: !!(flags2 & 2048), botHasMainApp: !!(flags2 & 8192), botForumView: !!(flags2 & 65536), botForumCanManageTopics: !!(flags2 & 131072), botCanManageBots: !!(flags2 & 262144), botGuestchat: !!(flags2 & 524288), botGuard: !!(flags2 & 1048576), id: r.int53(), accessHash: flags & 1 ? r.long() : void 0, firstName: flags & 2 ? r.string() : void 0, lastName: flags & 4 ? r.string() : void 0, username: flags & 8 ? r.string() : void 0, phone: flags & 16 ? r.string() : void 0, photo: flags & 32 ? r.object() : void 0, status: flags & 64 ? r.object() : void 0, botInfoVersion: flags & 16384 ? r.int() : void 0, restrictionReason: flags & 262144 ? r.vector(r.object) : void 0, botInlinePlaceholder: flags & 524288 ? r.string() : void 0, langCode: flags & 4194304 ? r.string() : void 0, emojiStatus: flags & 1073741824 ? r.object() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 32 ? r.object() : void 0, color: flags2 & 256 ? r.object() : void 0, profileColor: flags2 & 512 ? r.object() : void 0, botActiveUsers: flags2 & 4096 ? r.int() : void 0, botVerificationIcon: flags2 & 16384 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 32768 ? r.long() : void 0, linkedCommunityId: flags2 & 2097152 ? r.int53() : void 0 };
   },
   1326562017: function(r) {
     return { _: "userProfilePhotoEmpty" };
@@ -40089,21 +40570,33 @@ var m$1 = {
   1704108455: function(r) {
     return { _: "chatForbidden", id: r.int53(), title: r.string() };
   },
-  473084188: function(r) {
+  3567203526: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "channel", creator: !!(flags & 1), left: !!(flags & 4), broadcast: !!(flags & 32), verified: !!(flags & 128), megagroup: !!(flags & 256), restricted: !!(flags & 512), signatures: !!(flags & 2048), min: !!(flags & 4096), scam: !!(flags & 524288), hasLink: !!(flags & 1048576), hasGeo: !!(flags & 2097152), slowmodeEnabled: !!(flags & 4194304), callActive: !!(flags & 8388608), callNotEmpty: !!(flags & 16777216), fake: !!(flags & 33554432), gigagroup: !!(flags & 67108864), noforwards: !!(flags & 134217728), joinToSend: !!(flags & 268435456), joinRequest: !!(flags & 536870912), forum: !!(flags & 1073741824), storiesHidden: !!(flags2 & 2), storiesHiddenMin: !!(flags2 & 4), storiesUnavailable: !!(flags2 & 8), signatureProfiles: !!(flags2 & 4096), autotranslation: !!(flags2 & 32768), broadcastMessagesAllowed: !!(flags2 & 65536), monoforum: !!(flags2 & 131072), forumTabs: !!(flags2 & 524288), id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string(), username: flags & 64 ? r.string() : void 0, photo: r.object(), date: r.int(), restrictionReason: flags & 512 ? r.vector(r.object) : void 0, adminRights: flags & 16384 ? r.object() : void 0, bannedRights: flags & 32768 ? r.object() : void 0, defaultBannedRights: flags & 262144 ? r.object() : void 0, participantsCount: flags & 131072 ? r.int() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 16 ? r.object() : void 0, color: flags2 & 128 ? r.object() : void 0, profileColor: flags2 & 256 ? r.object() : void 0, emojiStatus: flags2 & 512 ? r.object() : void 0, level: flags2 & 1024 ? r.int() : void 0, subscriptionUntilDate: flags2 & 2048 ? r.int() : void 0, botVerificationIcon: flags2 & 8192 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, linkedMonoforumId: flags2 & 262144 ? r.int53() : void 0 };
+    return { _: "channel", creator: !!(flags & 1), left: !!(flags & 4), broadcast: !!(flags & 32), verified: !!(flags & 128), megagroup: !!(flags & 256), restricted: !!(flags & 512), signatures: !!(flags & 2048), min: !!(flags & 4096), scam: !!(flags & 524288), hasLink: !!(flags & 1048576), hasGeo: !!(flags & 2097152), slowmodeEnabled: !!(flags & 4194304), callActive: !!(flags & 8388608), callNotEmpty: !!(flags & 16777216), fake: !!(flags & 33554432), gigagroup: !!(flags & 67108864), noforwards: !!(flags & 134217728), joinToSend: !!(flags & 268435456), joinRequest: !!(flags & 536870912), forum: !!(flags & 1073741824), storiesHidden: !!(flags2 & 2), storiesHiddenMin: !!(flags2 & 4), storiesUnavailable: !!(flags2 & 8), signatureProfiles: !!(flags2 & 4096), autotranslation: !!(flags2 & 32768), broadcastMessagesAllowed: !!(flags2 & 65536), monoforum: !!(flags2 & 131072), forumTabs: !!(flags2 & 524288), id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string(), username: flags & 64 ? r.string() : void 0, photo: r.object(), date: r.int(), restrictionReason: flags & 512 ? r.vector(r.object) : void 0, adminRights: flags & 16384 ? r.object() : void 0, bannedRights: flags & 32768 ? r.object() : void 0, defaultBannedRights: flags & 262144 ? r.object() : void 0, participantsCount: flags & 131072 ? r.int() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 16 ? r.object() : void 0, color: flags2 & 128 ? r.object() : void 0, profileColor: flags2 & 256 ? r.object() : void 0, emojiStatus: flags2 & 512 ? r.object() : void 0, level: flags2 & 1024 ? r.int() : void 0, subscriptionUntilDate: flags2 & 2048 ? r.int() : void 0, botVerificationIcon: flags2 & 8192 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, linkedMonoforumId: flags2 & 262144 ? r.int53() : void 0, linkedCommunityId: flags2 & 1048576 ? r.int53() : void 0 };
   },
   399807445: function(r) {
     var flags = r.uint();
     return { _: "channelForbidden", broadcast: !!(flags & 32), megagroup: !!(flags & 256), monoforum: !!(flags & 1024), id: r.int53(), accessHash: r.long(), title: r.string(), untilDate: flags & 65536 ? r.int() : void 0 };
   },
+  4248623800: function(r) {
+    var flags = r.uint();
+    return { _: "communityForbidden", id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string() };
+  },
+  1710221652: function(r) {
+    var flags = r.uint(), flags2 = r.uint();
+    return { _: "community", creator: !!(flags & 1), left: !!(flags & 4), min: !!(flags & 4096), collapsedInDialogs: !!(flags2 & 1048576), id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string(), photo: r.object(), date: r.int(), adminRights: flags & 16384 ? r.object() : void 0, defaultBannedRights: flags & 262144 ? r.object() : void 0 };
+  },
   640893467: function(r) {
     var flags = r.uint();
     return { _: "chatFull", canSetUsername: !!(flags & 128), hasScheduled: !!(flags & 256), translationsDisabled: !!(flags & 524288), id: r.int53(), about: r.string(), participants: r.object(), chatPhoto: flags & 4 ? r.object() : void 0, notifySettings: r.object(), exportedInvite: flags & 8192 ? r.object() : void 0, botInfo: flags & 8 ? r.vector(r.object) : void 0, pinnedMsgId: flags & 64 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, call: flags & 4096 ? r.object() : void 0, ttlPeriod: flags & 16384 ? r.int() : void 0, groupcallDefaultJoinAs: flags & 32768 ? r.object() : void 0, themeEmoticon: flags & 65536 ? r.string() : void 0, requestsPending: flags & 131072 ? r.int() : void 0, recentRequesters: flags & 131072 ? r.vector(r.long) : void 0, availableReactions: flags & 262144 ? r.object() : void 0, reactionsLimit: flags & 1048576 ? r.int() : void 0 };
   },
-  3839931037: function(r) {
+  2689502522: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "channelFull", canViewParticipants: !!(flags & 8), canSetUsername: !!(flags & 64), canSetStickers: !!(flags & 128), hiddenPrehistory: !!(flags & 1024), canSetLocation: !!(flags & 65536), hasScheduled: !!(flags & 524288), canViewStats: !!(flags & 1048576), blocked: !!(flags & 4194304), canDeleteChannel: !!(flags2 & 1), antispam: !!(flags2 & 2), participantsHidden: !!(flags2 & 4), translationsDisabled: !!(flags2 & 8), storiesPinnedAvailable: !!(flags2 & 32), viewForumAsMessages: !!(flags2 & 64), restrictedSponsored: !!(flags2 & 2048), canViewRevenue: !!(flags2 & 4096), paidMediaAllowed: !!(flags2 & 16384), canViewStarsRevenue: !!(flags2 & 32768), paidReactionsAvailable: !!(flags2 & 65536), stargiftsAvailable: !!(flags2 & 524288), paidMessagesAvailable: !!(flags2 & 1048576), id: r.int53(), about: r.string(), participantsCount: flags & 1 ? r.int() : void 0, adminsCount: flags & 2 ? r.int() : void 0, kickedCount: flags & 4 ? r.int() : void 0, bannedCount: flags & 4 ? r.int() : void 0, onlineCount: flags & 8192 ? r.int() : void 0, readInboxMaxId: r.int(), readOutboxMaxId: r.int(), unreadCount: r.int(), chatPhoto: r.object(), notifySettings: r.object(), exportedInvite: flags & 8388608 ? r.object() : void 0, botInfo: r.vector(r.object), migratedFromChatId: flags & 16 ? r.long() : void 0, migratedFromMaxId: flags & 16 ? r.int() : void 0, pinnedMsgId: flags & 32 ? r.int() : void 0, stickerset: flags & 256 ? r.object() : void 0, availableMinId: flags & 512 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, linkedChatId: flags & 16384 ? r.int53() : void 0, location: flags & 32768 ? r.object() : void 0, slowmodeSeconds: flags & 131072 ? r.int() : void 0, slowmodeNextSendDate: flags & 262144 ? r.int() : void 0, statsDc: flags & 4096 ? r.int() : void 0, pts: r.int(), call: flags & 2097152 ? r.object() : void 0, ttlPeriod: flags & 16777216 ? r.int() : void 0, pendingSuggestions: flags & 33554432 ? r.vector(r.string) : void 0, groupcallDefaultJoinAs: flags & 67108864 ? r.object() : void 0, themeEmoticon: flags & 134217728 ? r.string() : void 0, requestsPending: flags & 268435456 ? r.int() : void 0, recentRequesters: flags & 268435456 ? r.vector(r.int53) : void 0, defaultSendAs: flags & 536870912 ? r.object() : void 0, availableReactions: flags & 1073741824 ? r.object() : void 0, reactionsLimit: flags2 & 8192 ? r.int() : void 0, stories: flags2 & 16 ? r.object() : void 0, wallpaper: flags2 & 128 ? r.object() : void 0, boostsApplied: flags2 & 256 ? r.int() : void 0, boostsUnrestrict: flags2 & 512 ? r.int() : void 0, emojiset: flags2 & 1024 ? r.object() : void 0, botVerification: flags2 & 131072 ? r.object() : void 0, stargiftsCount: flags2 & 262144 ? r.int() : void 0, sendPaidMessagesStars: flags2 & 2097152 ? r.long() : void 0, mainTab: flags2 & 4194304 ? r.object() : void 0 };
+    return { _: "channelFull", canViewParticipants: !!(flags & 8), canSetUsername: !!(flags & 64), canSetStickers: !!(flags & 128), hiddenPrehistory: !!(flags & 1024), canSetLocation: !!(flags & 65536), hasScheduled: !!(flags & 524288), canViewStats: !!(flags & 1048576), blocked: !!(flags & 4194304), canDeleteChannel: !!(flags2 & 1), antispam: !!(flags2 & 2), participantsHidden: !!(flags2 & 4), translationsDisabled: !!(flags2 & 8), storiesPinnedAvailable: !!(flags2 & 32), viewForumAsMessages: !!(flags2 & 64), restrictedSponsored: !!(flags2 & 2048), canViewRevenue: !!(flags2 & 4096), paidMediaAllowed: !!(flags2 & 16384), canViewStarsRevenue: !!(flags2 & 32768), paidReactionsAvailable: !!(flags2 & 65536), stargiftsAvailable: !!(flags2 & 524288), paidMessagesAvailable: !!(flags2 & 1048576), id: r.int53(), about: r.string(), participantsCount: flags & 1 ? r.int() : void 0, adminsCount: flags & 2 ? r.int() : void 0, kickedCount: flags & 4 ? r.int() : void 0, bannedCount: flags & 4 ? r.int() : void 0, onlineCount: flags & 8192 ? r.int() : void 0, readInboxMaxId: r.int(), readOutboxMaxId: r.int(), unreadCount: r.int(), chatPhoto: r.object(), notifySettings: r.object(), exportedInvite: flags & 8388608 ? r.object() : void 0, botInfo: r.vector(r.object), migratedFromChatId: flags & 16 ? r.long() : void 0, migratedFromMaxId: flags & 16 ? r.int() : void 0, pinnedMsgId: flags & 32 ? r.int() : void 0, stickerset: flags & 256 ? r.object() : void 0, availableMinId: flags & 512 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, linkedChatId: flags & 16384 ? r.int53() : void 0, location: flags & 32768 ? r.object() : void 0, slowmodeSeconds: flags & 131072 ? r.int() : void 0, slowmodeNextSendDate: flags & 262144 ? r.int() : void 0, statsDc: flags & 4096 ? r.int() : void 0, pts: r.int(), call: flags & 2097152 ? r.object() : void 0, ttlPeriod: flags & 16777216 ? r.int() : void 0, pendingSuggestions: flags & 33554432 ? r.vector(r.string) : void 0, groupcallDefaultJoinAs: flags & 67108864 ? r.object() : void 0, themeEmoticon: flags & 134217728 ? r.string() : void 0, requestsPending: flags & 268435456 ? r.int() : void 0, recentRequesters: flags & 268435456 ? r.vector(r.int53) : void 0, defaultSendAs: flags & 536870912 ? r.object() : void 0, availableReactions: flags & 1073741824 ? r.object() : void 0, reactionsLimit: flags2 & 8192 ? r.int() : void 0, stories: flags2 & 16 ? r.object() : void 0, wallpaper: flags2 & 128 ? r.object() : void 0, boostsApplied: flags2 & 256 ? r.int() : void 0, boostsUnrestrict: flags2 & 512 ? r.int() : void 0, emojiset: flags2 & 1024 ? r.object() : void 0, botVerification: flags2 & 131072 ? r.object() : void 0, stargiftsCount: flags2 & 262144 ? r.int() : void 0, sendPaidMessagesStars: flags2 & 2097152 ? r.long() : void 0, mainTab: flags2 & 4194304 ? r.object() : void 0, guardBotId: flags2 & 8388608 ? r.int53() : void 0 };
+  },
+  3417810183: function(r) {
+    var flags = r.uint();
+    return { _: "communityFull", id: r.int53(), about: r.string(), chatPhoto: r.object(), linkedPeers: r.vector(r.object), adminsCount: flags & 2 ? r.int() : void 0, kickedCount: flags & 4 ? r.int() : void 0, peerLinkRequestsPending: flags & 1 ? r.int() : void 0 };
   },
   954703838: function(r) {
     var flags = r.uint();
@@ -40135,9 +40628,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messageEmpty", id: r.int(), peerId: flags & 1 ? r.object() : void 0 };
   },
-  988112002: function(r) {
+  1979759059: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "message", out: !!(flags & 2), mentioned: !!(flags & 16), mediaUnread: !!(flags & 32), silent: !!(flags & 8192), post: !!(flags & 16384), fromScheduled: !!(flags & 262144), legacy: !!(flags & 524288), editHide: !!(flags & 2097152), pinned: !!(flags & 16777216), noforwards: !!(flags & 67108864), invertMedia: !!(flags & 134217728), offline: !!(flags2 & 2), videoProcessingPending: !!(flags2 & 16), paidSuggestedPostStars: !!(flags2 & 256), paidSuggestedPostTon: !!(flags2 & 512), id: r.int(), fromId: flags & 256 ? r.object() : void 0, fromBoostsApplied: flags & 536870912 ? r.int() : void 0, fromRank: flags2 & 4096 ? r.string() : void 0, peerId: r.object(), savedPeerId: flags & 268435456 ? r.object() : void 0, fwdFrom: flags & 4 ? r.object() : void 0, viaBotId: flags & 2048 ? r.int53() : void 0, viaBusinessBotId: flags2 & 1 ? r.int53() : void 0, replyTo: flags & 8 ? r.object() : void 0, date: r.int(), message: r.string(), media: flags & 512 ? r.object() : void 0, replyMarkup: flags & 64 ? r.object() : void 0, entities: flags & 128 ? r.vector(r.object) : void 0, views: flags & 1024 ? r.int() : void 0, forwards: flags & 1024 ? r.int() : void 0, replies: flags & 8388608 ? r.object() : void 0, editDate: flags & 32768 ? r.int() : void 0, postAuthor: flags & 65536 ? r.string() : void 0, groupedId: flags & 131072 ? r.long() : void 0, reactions: flags & 1048576 ? r.object() : void 0, restrictionReason: flags & 4194304 ? r.vector(r.object) : void 0, ttlPeriod: flags & 33554432 ? r.int() : void 0, quickReplyShortcutId: flags & 1073741824 ? r.int() : void 0, effect: flags2 & 4 ? r.long() : void 0, factcheck: flags2 & 8 ? r.object() : void 0, reportDeliveryUntilDate: flags2 & 32 ? r.int() : void 0, paidMessageStars: flags2 & 64 ? r.long() : void 0, suggestedPost: flags2 & 128 ? r.object() : void 0, scheduleRepeatPeriod: flags2 & 1024 ? r.int() : void 0, summaryFromLanguage: flags2 & 2048 ? r.string() : void 0 };
+    return { _: "message", out: !!(flags & 2), mentioned: !!(flags & 16), mediaUnread: !!(flags & 32), silent: !!(flags & 8192), post: !!(flags & 16384), fromScheduled: !!(flags & 262144), legacy: !!(flags & 524288), editHide: !!(flags & 2097152), pinned: !!(flags & 16777216), noforwards: !!(flags & 67108864), invertMedia: !!(flags & 134217728), offline: !!(flags2 & 2), videoProcessingPending: !!(flags2 & 16), paidSuggestedPostStars: !!(flags2 & 256), paidSuggestedPostTon: !!(flags2 & 512), id: r.int(), fromId: flags & 256 ? r.object() : void 0, fromBoostsApplied: flags & 536870912 ? r.int() : void 0, fromRank: flags2 & 4096 ? r.string() : void 0, peerId: r.object(), savedPeerId: flags & 268435456 ? r.object() : void 0, fwdFrom: flags & 4 ? r.object() : void 0, viaBotId: flags & 2048 ? r.int53() : void 0, viaBusinessBotId: flags2 & 1 ? r.int53() : void 0, guestchatViaFrom: flags2 & 524288 ? r.object() : void 0, replyTo: flags & 8 ? r.object() : void 0, date: r.int(), message: r.string(), media: flags & 512 ? r.object() : void 0, replyMarkup: flags & 64 ? r.object() : void 0, entities: flags & 128 ? r.vector(r.object) : void 0, views: flags & 1024 ? r.int() : void 0, forwards: flags & 1024 ? r.int() : void 0, replies: flags & 8388608 ? r.object() : void 0, editDate: flags & 32768 ? r.int() : void 0, postAuthor: flags & 65536 ? r.string() : void 0, groupedId: flags & 131072 ? r.long() : void 0, reactions: flags & 1048576 ? r.object() : void 0, restrictionReason: flags & 4194304 ? r.vector(r.object) : void 0, ttlPeriod: flags & 33554432 ? r.int() : void 0, quickReplyShortcutId: flags & 1073741824 ? r.int() : void 0, effect: flags2 & 4 ? r.long() : void 0, factcheck: flags2 & 8 ? r.object() : void 0, reportDeliveryUntilDate: flags2 & 32 ? r.int() : void 0, paidMessageStars: flags2 & 64 ? r.long() : void 0, suggestedPost: flags2 & 128 ? r.object() : void 0, scheduleRepeatPeriod: flags2 & 1024 ? r.int() : void 0, summaryFromLanguage: flags2 & 2048 ? r.string() : void 0, richMessage: flags2 & 8192 ? r.object() : void 0 };
   },
   2055212554: function(r) {
     var flags = r.uint();
@@ -40430,6 +40923,19 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messageActionNoForwardsRequest", expired: !!(flags & 1), prevValue: r.boolean(), newValue: r.boolean() };
   },
+  2644626796: function(r) {
+    return { _: "messageActionPollAppendAnswer", answer: r.object() };
+  },
+  966161628: function(r) {
+    return { _: "messageActionPollDeleteAnswer", answer: r.object() };
+  },
+  375414334: function(r) {
+    return { _: "messageActionManagedBotCreated", botId: r.int53() };
+  },
+  1562426088: function(r) {
+    var flags = r.uint();
+    return { _: "messageActionChangeCommunity", communityId: flags & 1 ? r.int53() : void 0 };
+  },
   4236900339: function(r) {
     var flags = r.uint();
     return { _: "dialog", pinned: !!(flags & 4), unreadMark: !!(flags & 8), viewForumAsMessages: !!(flags & 64), peer: r.object(), topMessage: r.int(), readInboxMaxId: r.int(), readOutboxMaxId: r.int(), unreadCount: r.int(), unreadMentionsCount: r.int(), unreadReactionsCount: r.int(), unreadPollVotesCount: r.int(), notifySettings: r.object(), pts: flags & 1 ? r.int() : void 0, draft: flags & 2 ? r.object() : void 0, folderId: flags & 16 ? r.int() : void 0, ttlPeriod: flags & 32 ? r.int() : void 0 };
@@ -40437,6 +40943,10 @@ var m$1 = {
   1908216652: function(r) {
     var flags = r.uint();
     return { _: "dialogFolder", pinned: !!(flags & 4), folder: r.object(), peer: r.object(), topMessage: r.int(), unreadMutedPeersCount: r.int(), unreadUnmutedPeersCount: r.int(), unreadMutedMessagesCount: r.int(), unreadUnmutedMessagesCount: r.int() };
+  },
+  4153018739: function(r) {
+    var flags = r.uint();
+    return { _: "dialogCommunity", pinned: !!(flags & 4), communityId: r.int53(), notifySettings: r.object() };
   },
   590459437: function(r) {
     return { _: "photoEmpty", id: r.long() };
@@ -40477,8 +40987,8 @@ var m$1 = {
   596704836: function(r) {
     return { _: "auth.sentCodeSuccess", authorization: r.object() };
   },
-  3767884348: function(r) {
-    return { _: "auth.sentCodePaymentRequired", storeProduct: r.string(), phoneCodeHash: r.string(), supportEmailAddress: r.string(), supportEmailSubject: r.string(), currency: r.string(), amount: r.long() };
+  4169301695: function(r) {
+    return { _: "auth.sentCodePaymentRequired", storeProduct: r.string(), phoneCodeHash: r.string(), supportEmailAddress: r.string(), supportEmailSubject: r.string(), premiumDays: r.int(), currency: r.string(), amount: r.long() };
   },
   782418132: function(r) {
     var flags = r.uint();
@@ -40505,6 +41015,9 @@ var m$1 = {
   },
   1548122514: function(r) {
     return { _: "inputNotifyForumTopic", peer: r.object(), topMsgId: r.int() };
+  },
+  666573532: function(r) {
+    return { _: "inputNotifyCommunity", community: r.object() };
   },
   3402328802: function(r) {
     var flags = r.uint();
@@ -40670,6 +41183,9 @@ var m$1 = {
   },
   464520273: function(r) {
     return { _: "inputMessagesFilterPinned" };
+  },
+  4197173514: function(r) {
+    return { _: "inputMessagesFilterPoll" };
   },
   522914557: function(r) {
     return { _: "updateNewMessage", message: r.object(), pts: r.int(), ptsCount: r.int() };
@@ -40985,8 +41501,9 @@ var m$1 = {
   1885586395: function(r) {
     return { _: "updatePendingJoinRequests", peer: r.object(), requestsPending: r.int(), recentRequesters: r.vector(r.int53) };
   },
-  299870598: function(r) {
-    return { _: "updateBotChatInviteRequester", peer: r.object(), date: r.int(), userId: r.int53(), about: r.string(), invite: r.object(), qts: r.int() };
+  2092125561: function(r) {
+    var flags = r.uint();
+    return { _: "updateBotChatInviteRequester", peer: r.object(), date: r.int(), userId: r.int53(), about: r.string(), invite: r.object(), qts: r.int(), queryId: flags & 1 ? r.long() : void 0 };
   },
   506035194: function(r) {
     var flags = r.uint();
@@ -41174,6 +41691,47 @@ var m$1 = {
   3179505593: function(r) {
     return { _: "updateChatParticipantRank", chatId: r.int53(), userId: r.int53(), rank: r.string(), version: r.int() };
   },
+  1216408986: function(r) {
+    return { _: "updateManagedBot", userId: r.int53(), botId: r.int53(), qts: r.int() };
+  },
+  3453225277: function(r) {
+    var flags = r.uint();
+    return { _: "updateBotGuestChatQuery", queryId: r.long(), message: r.object(), referenceMessages: flags & 1 ? r.vector(r.object) : void 0, qts: r.int() };
+  },
+  2349830651: function(r) {
+    return { _: "updateAiComposeTones" };
+  },
+  3182198384: function(r) {
+    return { _: "updateJoinChatWebViewDecision", peer: r.object(), queryId: r.long(), result: r.object() };
+  },
+  2988475302: function(r) {
+    var flags = r.uint();
+    return { _: "updateNewBotConnection", confirmed: !!(flags & 1), botId: r.int53(), date: flags & 2 ? r.int() : void 0, device: flags & 2 ? r.string() : void 0, location: flags & 2 ? r.string() : void 0 };
+  },
+  3281660638: function(r) {
+    var flags = r.uint();
+    return { _: "updateWebBrowserSettings", openExternalBrowser: !!(flags & 1), displayCloseButton: !!(flags & 2) };
+  },
+  335872721: function(r) {
+    var flags = r.uint();
+    return { _: "updateWebBrowserException", delete: !!(flags & 2), openExternalBrowser: flags & 1 ? r.boolean() : void 0, exception: r.object() };
+  },
+  549239713: function(r) {
+    return { _: "updateNewEphemeralMessage", message: r.object() };
+  },
+  1457257720: function(r) {
+    return { _: "updateDeleteEphemeralMessages", peer: r.object(), ids: r.vector(r.int) };
+  },
+  1270583041: function(r) {
+    return { _: "updateEditEphemeralMessage", message: r.object() };
+  },
+  2604140386: function(r) {
+    return { _: "updateEphemeralBotCallbackQuery", queryId: r.long(), userId: r.int53(), peer: r.object(), msgId: r.int(), data: r.bytes(), message: r.object() };
+  },
+  1812827683: function(r) {
+    var flags = r.uint();
+    return { _: "updateBotStarsSubscription", canceled: !!(flags & 1), paymentFailed: !!(flags & 2), restored: !!(flags & 4), userId: r.int53(), payload: r.bytes(), qts: r.int() };
+  },
   2775329342: function(r) {
     return { _: "updates.state", pts: r.int(), qts: r.int(), date: r.int(), seq: r.int(), unreadCount: r.int() };
   },
@@ -41336,6 +41894,9 @@ var m$1 = {
   577659656: function(r) {
     return { _: "notifyForumTopic", peer: r.object(), topMsgId: r.int() };
   },
+  3191302553: function(r) {
+    return { _: "notifyCommunity", communityId: r.int53() };
+  },
   381645902: function(r) {
     return { _: "sendMessageTypingAction" };
   },
@@ -41392,6 +41953,12 @@ var m$1 = {
   },
   929929052: function(r) {
     return { _: "sendMessageTextDraftAction", randomId: r.long(), text: r.object() };
+  },
+  3803331409: function(r) {
+    return { _: "inputSendMessageRichMessageDraftAction", randomId: r.long(), richMessage: r.object() };
+  },
+  2731222265: function(r) {
+    return { _: "sendMessageRichMessageDraftAction", randomId: r.long(), richMessage: r.object() };
   },
   3004386717: function(r) {
     return { _: "contacts.found", myResults: r.vector(r.object), results: r.vector(r.object), chats: r.vector(r.object), users: r.vector(r.object) };
@@ -41708,8 +42275,9 @@ var m$1 = {
   3556320491: function(r) {
     return { _: "messages.stickerSetNotModified" };
   },
-  3262826695: function(r) {
-    return { _: "botCommand", command: r.string(), description: r.string() };
+  2555565778: function(r) {
+    var flags = r.uint();
+    return { _: "botCommand", ephemeral: !!(flags & 1), command: r.string(), description: r.string() };
   },
   1300890265: function(r) {
     var flags = r.uint();
@@ -41873,6 +42441,15 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messageEntityFormattedDate", relative: !!(flags & 1), shortTime: !!(flags & 2), longTime: !!(flags & 4), shortDate: !!(flags & 8), longDate: !!(flags & 16), dayOfWeek: !!(flags & 32), offset: r.int(), length: r.int(), date: r.int() };
   },
+  1903653142: function(r) {
+    return { _: "messageEntityDiffInsert", offset: r.int(), length: r.int() };
+  },
+  3334596007: function(r) {
+    return { _: "messageEntityDiffReplace", offset: r.int(), length: r.int(), oldText: r.string() };
+  },
+  106086853: function(r) {
+    return { _: "messageEntityDiffDelete", offset: r.int(), length: r.int() };
+  },
   4002160262: function(r) {
     return { _: "inputChannelEmpty" };
   },
@@ -42006,6 +42583,10 @@ var m$1 = {
     var flags = r.uint();
     return { _: "inputBotInlineMessageMediaWebPage", invertMedia: !!(flags & 8), forceLargeMedia: !!(flags & 16), forceSmallMedia: !!(flags & 32), optional: !!(flags & 64), message: r.string(), entities: flags & 2 ? r.vector(r.object) : void 0, url: r.string(), replyMarkup: flags & 4 ? r.object() : void 0 };
   },
+  3023959404: function(r) {
+    var flags = r.uint();
+    return { _: "inputBotInlineMessageRichMessage", replyMarkup: flags & 4 ? r.object() : void 0, richMessage: r.object() };
+  },
   2294256409: function(r) {
     var flags = r.uint();
     return { _: "inputBotInlineResult", id: r.string(), type: r.string(), title: flags & 2 ? r.string() : void 0, description: flags & 4 ? r.string() : void 0, url: flags & 8 ? r.string() : void 0, thumb: flags & 16 ? r.object() : void 0, content: flags & 32 ? r.object() : void 0, sendMessage: r.object() };
@@ -42047,6 +42628,10 @@ var m$1 = {
   2157631910: function(r) {
     var flags = r.uint();
     return { _: "botInlineMessageMediaWebPage", invertMedia: !!(flags & 8), forceLargeMedia: !!(flags & 16), forceSmallMedia: !!(flags & 32), manual: !!(flags & 128), safe: !!(flags & 256), message: r.string(), entities: flags & 2 ? r.vector(r.object) : void 0, url: r.string(), replyMarkup: flags & 4 ? r.object() : void 0 };
+  },
+  174161531: function(r) {
+    var flags = r.uint();
+    return { _: "botInlineMessageRichMessage", replyMarkup: flags & 4 ? r.object() : void 0, richMessage: r.object() };
   },
   295067450: function(r) {
     var flags = r.uint();
@@ -42170,6 +42755,9 @@ var m$1 = {
   4255022060: function(r) {
     return { _: "topPeerCategoryBotsApp" };
   },
+  1814361053: function(r) {
+    return { _: "topPeerCategoryBotsGuestChat" };
+  },
   4219683473: function(r) {
     return { _: "topPeerCategoryPeers", category: r.object(), count: r.int(), peers: r.vector(r.object) };
   },
@@ -42186,9 +42774,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "draftMessageEmpty", date: flags & 1 ? r.int() : void 0 };
   },
-  2531960299: function(r) {
+  1627271828: function(r) {
     var flags = r.uint();
-    return { _: "draftMessage", noWebpage: !!(flags & 2), invertMedia: !!(flags & 64), replyTo: flags & 16 ? r.object() : void 0, message: r.string(), entities: flags & 8 ? r.vector(r.object) : void 0, media: flags & 32 ? r.object() : void 0, date: r.int(), effect: flags & 128 ? r.long() : void 0, suggestedPost: flags & 256 ? r.object() : void 0 };
+    return { _: "draftMessage", noWebpage: !!(flags & 2), invertMedia: !!(flags & 64), replyTo: flags & 16 ? r.object() : void 0, message: r.string(), entities: flags & 8 ? r.vector(r.object) : void 0, media: flags & 32 ? r.object() : void 0, date: r.int(), effect: flags & 128 ? r.long() : void 0, suggestedPost: flags & 256 ? r.object() : void 0, richMessage: flags & 512 ? r.object() : void 0 };
   },
   3336309862: function(r) {
     return { _: "messages.featuredStickersNotModified", count: r.int() };
@@ -42297,6 +42885,49 @@ var m$1 = {
   894777186: function(r) {
     return { _: "textAnchor", text: r.object(), name: r.string() };
   },
+  2637081751: function(r) {
+    return { _: "textMath", source: r.string() };
+  },
+  2724288192: function(r) {
+    return { _: "textCustomEmoji", documentId: r.long(), alt: r.string() };
+  },
+  1277844834: function(r) {
+    return { _: "textSpoiler", text: r.object() };
+  },
+  3441741636: function(r) {
+    return { _: "textMention", text: r.object() };
+  },
+  1368728810: function(r) {
+    return { _: "textHashtag", text: r.object() };
+  },
+  50276819: function(r) {
+    return { _: "textBotCommand", text: r.object() };
+  },
+  2073958401: function(r) {
+    return { _: "textCashtag", text: r.object() };
+  },
+  2892661674: function(r) {
+    return { _: "textAutoUrl", text: r.object() };
+  },
+  3310789725: function(r) {
+    return { _: "textAutoEmail", text: r.object() };
+  },
+  616720265: function(r) {
+    return { _: "textAutoPhone", text: r.object() };
+  },
+  3109454125: function(r) {
+    return { _: "textBankCard", text: r.object() };
+  },
+  27917308: function(r) {
+    return { _: "textMentionName", text: r.object(), userId: r.int53() };
+  },
+  2780061227: function(r) {
+    var flags = r.uint();
+    return { _: "textDate", relative: !!(flags & 1), shortTime: !!(flags & 2), longTime: !!(flags & 4), shortDate: !!(flags & 8), longDate: !!(flags & 16), dayOfWeek: !!(flags & 32), text: r.object(), date: r.int() };
+  },
+  2525416272: function(r) {
+    return { _: "textDiff", text: r.object(), oldText: r.object() };
+  },
   324435594: function(r) {
     return { _: "pageBlockUnsupported" };
   },
@@ -42341,11 +42972,11 @@ var m$1 = {
   },
   391759200: function(r) {
     var flags = r.uint();
-    return { _: "pageBlockPhoto", photoId: r.long(), caption: r.object(), url: flags & 1 ? r.string() : void 0, webpageId: flags & 1 ? r.long() : void 0 };
+    return { _: "pageBlockPhoto", spoiler: !!(flags & 2), photoId: r.long(), caption: r.object(), url: flags & 1 ? r.string() : void 0, webpageId: flags & 1 ? r.long() : void 0 };
   },
   2089805750: function(r) {
     var flags = r.uint();
-    return { _: "pageBlockVideo", autoplay: !!(flags & 1), loop: !!(flags & 2), videoId: r.long(), caption: r.object() };
+    return { _: "pageBlockVideo", autoplay: !!(flags & 1), loop: !!(flags & 2), spoiler: !!(flags & 4), videoId: r.long(), caption: r.object() };
   },
   972174080: function(r) {
     return { _: "pageBlockCover", cover: r.object() };
@@ -42376,8 +43007,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "pageBlockTable", bordered: !!(flags & 1), striped: !!(flags & 2), title: r.object(), rows: r.vector(r.object) };
   },
-  2592793057: function(r) {
-    return { _: "pageBlockOrderedList", items: r.vector(r.object) };
+  534181569: function(r) {
+    var flags = r.uint();
+    return { _: "pageBlockOrderedList", reversed: !!(flags & 4), items: r.vector(r.object), start: flags & 1 ? r.int() : void 0, type: flags & 2 ? r.string() : void 0 };
   },
   1987480557: function(r) {
     var flags = r.uint();
@@ -42388,6 +43020,36 @@ var m$1 = {
   },
   2756656886: function(r) {
     return { _: "pageBlockMap", geo: r.object(), zoom: r.int(), w: r.int(), h: r.int(), caption: r.object() };
+  },
+  3137275695: function(r) {
+    return { _: "pageBlockHeading1", text: r.object() };
+  },
+  158018284: function(r) {
+    return { _: "pageBlockHeading2", text: r.object() };
+  },
+  1743204781: function(r) {
+    return { _: "pageBlockHeading3", text: r.object() };
+  },
+  3039983403: function(r) {
+    return { _: "pageBlockHeading4", text: r.object() };
+  },
+  3686689898: function(r) {
+    return { _: "pageBlockHeading5", text: r.object() };
+  },
+  1747599785: function(r) {
+    return { _: "pageBlockHeading6", text: r.object() };
+  },
+  1493699616: function(r) {
+    return { _: "pageBlockMath", source: r.string() };
+  },
+  1009361890: function(r) {
+    return { _: "pageBlockThinking", text: r.object() };
+  },
+  1464557951: function(r) {
+    return { _: "inputPageBlockMap", geo: r.object(), zoom: r.int(), w: r.int(), h: r.int(), caption: r.object() };
+  },
+  242108356: function(r) {
+    return { _: "pageBlockBlockquoteBlocks", blocks: r.vector(r.object), caption: r.object() };
   },
   2246320897: function(r) {
     return { _: "phoneCallDiscardReasonMissed" };
@@ -42798,11 +43460,17 @@ var m$1 = {
   1684014375: function(r) {
     return { _: "inputDialogPeerFolder", folderId: r.int() };
   },
+  1777300164: function(r) {
+    return { _: "inputDialogPeerCommunity", community: r.object() };
+  },
   3849174789: function(r) {
     return { _: "dialogPeer", peer: r.object() };
   },
   1363483106: function(r) {
     return { _: "dialogPeerFolder", folderId: r.int() };
+  },
+  795199716: function(r) {
+    return { _: "dialogPeerCommunity", communityId: r.int53() };
   },
   223655517: function(r) {
     return { _: "messages.foundStickerSetsNotModified" };
@@ -43014,17 +43682,21 @@ var m$1 = {
   1869903447: function(r) {
     return { _: "pageCaption", text: r.object(), credit: r.object() };
   },
-  3106911949: function(r) {
-    return { _: "pageListItemText", text: r.object() };
+  794323004: function(r) {
+    var flags = r.uint();
+    return { _: "pageListItemText", checkbox: !!(flags & 1), checked: !!(flags & 2), text: r.object() };
   },
-  635466748: function(r) {
-    return { _: "pageListItemBlocks", blocks: r.vector(r.object) };
+  1674209194: function(r) {
+    var flags = r.uint();
+    return { _: "pageListItemBlocks", checkbox: !!(flags & 1), checked: !!(flags & 2), blocks: r.vector(r.object) };
   },
-  1577484359: function(r) {
-    return { _: "pageListOrderedItemText", num: r.string(), text: r.object() };
+  352522633: function(r) {
+    var flags = r.uint();
+    return { _: "pageListOrderedItemText", checkbox: !!(flags & 1), checked: !!(flags & 2), num: flags & 4 ? r.string() : void 0, text: r.object(), value: flags & 8 ? r.int() : void 0, type: flags & 16 ? r.string() : void 0 };
   },
-  2564655414: function(r) {
-    return { _: "pageListOrderedItemBlocks", num: r.string(), blocks: r.vector(r.object) };
+  2415056368: function(r) {
+    var flags = r.uint();
+    return { _: "pageListOrderedItemBlocks", checkbox: !!(flags & 1), checked: !!(flags & 2), num: flags & 4 ? r.string() : void 0, blocks: r.vector(r.object), value: flags & 8 ? r.int() : void 0, type: flags & 16 ? r.string() : void 0 };
   },
   3012615176: function(r) {
     var flags = r.uint();
@@ -43047,9 +43719,13 @@ var m$1 = {
     var flags = r.uint();
     return { _: "pollAnswer", text: r.object(), option: r.bytes(), media: flags & 1 ? r.object() : void 0, addedBy: flags & 2 ? r.object() : void 0, date: flags & 2 ? r.int() : void 0 };
   },
-  3091356649: function(r) {
+  429911446: function(r) {
+    var flags = r.uint();
+    return { _: "inputPollAnswer", text: r.object(), media: flags & 1 ? r.object() : void 0 };
+  },
+  2523803071: function(r) {
     var id = r.long(), flags = r.uint();
-    return { _: "poll", id, closed: !!(flags & 1), publicVoters: !!(flags & 2), multipleChoice: !!(flags & 4), quiz: !!(flags & 8), openAnswers: !!(flags & 64), revotingDisabled: !!(flags & 128), shuffleAnswers: !!(flags & 256), hideResultsUntilClose: !!(flags & 512), creator: !!(flags & 1024), question: r.object(), answers: r.vector(r.object), closePeriod: flags & 16 ? r.int() : void 0, closeDate: flags & 32 ? r.int() : void 0, hash: r.long() };
+    return { _: "poll", id, closed: !!(flags & 1), publicVoters: !!(flags & 2), multipleChoice: !!(flags & 4), quiz: !!(flags & 8), openAnswers: !!(flags & 64), revotingDisabled: !!(flags & 128), shuffleAnswers: !!(flags & 256), hideResultsUntilClose: !!(flags & 512), creator: !!(flags & 1024), subscribersOnly: !!(flags & 2048), question: r.object(), answers: r.vector(r.object), closePeriod: flags & 16 ? r.int() : void 0, closeDate: flags & 32 ? r.int() : void 0, countriesIso2: flags & 4096 ? r.vector(r.string) : void 0, hash: r.long() };
   },
   910500618: function(r) {
     var flags = r.uint();
@@ -43057,7 +43733,7 @@ var m$1 = {
   },
   3128668510: function(r) {
     var flags = r.uint();
-    return { _: "pollResults", min: !!(flags & 1), hasUnreadVotes: !!(flags & 64), results: flags & 2 ? r.vector(r.object) : void 0, totalVoters: flags & 4 ? r.int() : void 0, recentVoters: flags & 8 ? r.vector(r.object) : void 0, solution: flags & 16 ? r.string() : void 0, solutionEntities: flags & 16 ? r.vector(r.object) : void 0, solutionMedia: flags & 32 ? r.object() : void 0 };
+    return { _: "pollResults", min: !!(flags & 1), hasUnreadVotes: !!(flags & 64), canViewStats: !!(flags & 128), results: flags & 2 ? r.vector(r.object) : void 0, totalVoters: flags & 4 ? r.int() : void 0, recentVoters: flags & 8 ? r.vector(r.object) : void 0, solution: flags & 16 ? r.string() : void 0, solutionEntities: flags & 16 ? r.vector(r.object) : void 0, solutionMedia: flags & 32 ? r.object() : void 0 };
   },
   4030849616: function(r) {
     return { _: "chatOnlines", onlines: r.int() };
@@ -43067,11 +43743,11 @@ var m$1 = {
   },
   1605510357: function(r) {
     var flags = r.uint();
-    return { _: "chatAdminRights", changeInfo: !!(flags & 1), postMessages: !!(flags & 2), editMessages: !!(flags & 4), deleteMessages: !!(flags & 8), banUsers: !!(flags & 16), inviteUsers: !!(flags & 32), pinMessages: !!(flags & 128), addAdmins: !!(flags & 512), anonymous: !!(flags & 1024), manageCall: !!(flags & 2048), other: !!(flags & 4096), manageTopics: !!(flags & 8192), postStories: !!(flags & 16384), editStories: !!(flags & 32768), deleteStories: !!(flags & 65536), manageDirectMessages: !!(flags & 131072), manageRanks: !!(flags & 262144) };
+    return { _: "chatAdminRights", changeInfo: !!(flags & 1), postMessages: !!(flags & 2), editMessages: !!(flags & 4), deleteMessages: !!(flags & 8), banUsers: !!(flags & 16), inviteUsers: !!(flags & 32), pinMessages: !!(flags & 128), addAdmins: !!(flags & 512), anonymous: !!(flags & 1024), manageCall: !!(flags & 2048), other: !!(flags & 4096), manageTopics: !!(flags & 8192), postStories: !!(flags & 16384), editStories: !!(flags & 32768), deleteStories: !!(flags & 65536), manageDirectMessages: !!(flags & 131072), manageRanks: !!(flags & 262144), manageLinkedPeers: !!(flags & 524288) };
   },
   2668758040: function(r) {
     var flags = r.uint();
-    return { _: "chatBannedRights", viewMessages: !!(flags & 1), sendMessages: !!(flags & 2), sendMedia: !!(flags & 4), sendStickers: !!(flags & 8), sendGifs: !!(flags & 16), sendGames: !!(flags & 32), sendInline: !!(flags & 64), embedLinks: !!(flags & 128), sendPolls: !!(flags & 256), changeInfo: !!(flags & 1024), inviteUsers: !!(flags & 32768), pinMessages: !!(flags & 131072), manageTopics: !!(flags & 262144), sendPhotos: !!(flags & 524288), sendVideos: !!(flags & 1048576), sendRoundvideos: !!(flags & 2097152), sendAudios: !!(flags & 4194304), sendVoices: !!(flags & 8388608), sendDocs: !!(flags & 16777216), sendPlain: !!(flags & 33554432), editRank: !!(flags & 67108864), untilDate: r.int() };
+    return { _: "chatBannedRights", viewMessages: !!(flags & 1), sendMessages: !!(flags & 2), sendMedia: !!(flags & 4), sendStickers: !!(flags & 8), sendGifs: !!(flags & 16), sendGames: !!(flags & 32), sendInline: !!(flags & 64), embedLinks: !!(flags & 128), sendPolls: !!(flags & 256), changeInfo: !!(flags & 1024), inviteUsers: !!(flags & 32768), pinMessages: !!(flags & 131072), manageTopics: !!(flags & 262144), sendPhotos: !!(flags & 524288), sendVideos: !!(flags & 1048576), sendRoundvideos: !!(flags & 2097152), sendAudios: !!(flags & 4194304), sendVoices: !!(flags & 8388608), sendDocs: !!(flags & 16777216), sendPlain: !!(flags & 33554432), editRank: !!(flags & 67108864), sendReactions: !!(flags & 134217728), manageLinkedPeers: !!(flags & 268435456), untilDate: r.int() };
   },
   3861952889: function(r) {
     return { _: "inputWallPaper", id: r.long(), accessHash: r.long() };
@@ -43234,6 +43910,9 @@ var m$1 = {
   29770178: function(r) {
     return { _: "webPageAttributeStarGiftAuction", gift: r.object(), endDate: r.int() };
   },
+  2005007896: function(r) {
+    return { _: "webPageAttributeAiComposeTone", emojiId: r.long() };
+  },
   1218005070: function(r) {
     var flags = r.uint();
     return { _: "messages.votesList", count: r.int(), votes: r.vector(r.object), chats: r.vector(r.object), users: r.vector(r.object), nextOffset: flags & 1 ? r.string() : void 0 };
@@ -43340,7 +44019,7 @@ var m$1 = {
   },
   462937446: function(r) {
     var flags = r.uint();
-    return { _: "messageReplyHeader", replyToScheduled: !!(flags & 4), forumTopic: !!(flags & 8), quote: !!(flags & 512), replyToMsgId: flags & 16 ? r.int() : void 0, replyToPeerId: flags & 1 ? r.object() : void 0, replyFrom: flags & 32 ? r.object() : void 0, replyMedia: flags & 256 ? r.object() : void 0, replyToTopId: flags & 2 ? r.int() : void 0, quoteText: flags & 64 ? r.string() : void 0, quoteEntities: flags & 128 ? r.vector(r.object) : void 0, quoteOffset: flags & 1024 ? r.int() : void 0, todoItemId: flags & 2048 ? r.int() : void 0, pollOption: flags & 4096 ? r.bytes() : void 0 };
+    return { _: "messageReplyHeader", replyToScheduled: !!(flags & 4), forumTopic: !!(flags & 8), quote: !!(flags & 512), replyToEphemeral: !!(flags & 8192), replyToMsgId: flags & 16 ? r.int() : void 0, replyToPeerId: flags & 1 ? r.object() : void 0, replyFrom: flags & 32 ? r.object() : void 0, replyMedia: flags & 256 ? r.object() : void 0, replyToTopId: flags & 2 ? r.int() : void 0, quoteText: flags & 64 ? r.string() : void 0, quoteEntities: flags & 128 ? r.vector(r.object) : void 0, quoteOffset: flags & 1024 ? r.int() : void 0, todoItemId: flags & 2048 ? r.int() : void 0, pollOption: flags & 4096 ? r.bytes() : void 0 };
   },
   240843065: function(r) {
     return { _: "messageReplyStoryHeader", peer: r.object(), storyId: r.int() };
@@ -43587,7 +44266,7 @@ var m$1 = {
   },
   1294139288: function(r) {
     var flags = r.uint();
-    return { _: "webViewResultUrl", fullsize: !!(flags & 2), fullscreen: !!(flags & 4), queryId: flags & 1 ? r.long() : void 0, url: r.string() };
+    return { _: "webViewResultUrl", fullsize: !!(flags & 2), fullscreen: !!(flags & 4), sameOrigin: !!(flags & 8), queryId: flags & 1 ? r.long() : void 0, url: r.string() };
   },
   211046684: function(r) {
     var flags = r.uint();
@@ -43727,9 +44406,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "inputStorePaymentStarsGiveaway", onlyNewSubscribers: !!(flags & 1), winnersAreVisible: !!(flags & 8), stars: r.long(), boostPeer: r.object(), additionalPeers: flags & 2 ? r.vector(r.object) : void 0, countriesIso2: flags & 4 ? r.vector(r.string) : void 0, prizeDescription: flags & 16 ? r.string() : void 0, randomId: r.long(), untilDate: r.int(), currency: r.string(), amount: r.long(), users: r.int() };
   },
-  2612159341: function(r) {
+  1069645911: function(r) {
     var flags = r.uint();
-    return { _: "inputStorePaymentAuthCode", restore: !!(flags & 1), phoneNumber: r.string(), phoneCodeHash: r.string(), currency: r.string(), amount: r.long() };
+    return { _: "inputStorePaymentAuthCode", restore: !!(flags & 1), phoneNumber: r.string(), phoneCodeHash: r.string(), premiumDays: r.int(), currency: r.string(), amount: r.long() };
   },
   2298016283: function(r) {
     return { _: "paymentFormMethod", url: r.string(), title: r.string() };
@@ -43857,6 +44536,10 @@ var m$1 = {
   865857388: function(r) {
     var flags = r.uint();
     return { _: "requestPeerTypeBroadcast", creator: !!(flags & 1), hasUsername: flags & 8 ? r.boolean() : void 0, userAdminRights: flags & 2 ? r.object() : void 0, botAdminRights: flags & 4 ? r.object() : void 0 };
+  },
+  1048699e3: function(r) {
+    var flags = r.uint();
+    return { _: "requestPeerTypeCreateBot", botManaged: !!(flags & 1), suggestedName: flags & 2 ? r.string() : void 0, suggestedUsername: flags & 4 ? r.string() : void 0 };
   },
   1209970170: function(r) {
     return { _: "emojiListNotModified" };
@@ -44014,6 +44697,9 @@ var m$1 = {
   },
   1775660101: function(r) {
     return { _: "inputReplyToMonoForum", monoforumPeerId: r.object() };
+  },
+  1092204894: function(r) {
+    return { _: "inputReplyToEphemeralMessage", id: r.int() };
   },
   1070138683: function(r) {
     return { _: "exportedStoryLink", link: r.string() };
@@ -44275,9 +44961,9 @@ var m$1 = {
   1603398491: function(r) {
     return { _: "messages.quickRepliesNotModified" };
   },
-  3445908332: function(r) {
-    r.uint();
-    return { _: "connectedBot", botId: r.int53(), recipients: r.object(), rights: r.object() };
+  54448129: function(r) {
+    var flags = r.uint();
+    return { _: "connectedBot", botId: r.int53(), recipients: r.object(), rights: r.object(), device: flags & 1 ? r.string() : void 0, date: flags & 2 ? r.int() : void 0, location: flags & 4 ? r.string() : void 0 };
   },
   400029819: function(r) {
     return { _: "account.connectedBots", connectedBots: r.vector(r.object), users: r.vector(r.object) };
@@ -44902,38 +45588,6 @@ var m$1 = {
     var flags = r.uint();
     return { _: "keyboardButtonStyle", bgPrimary: !!(flags & 1), bgDanger: !!(flags & 2), bgSuccess: !!(flags & 4), icon: flags & 8 ? r.long() : void 0 };
   },
-  2644626796: function(r) {
-    return { _: "messageActionPollAppendAnswer", answer: r.object() };
-  },
-  966161628: function(r) {
-    return { _: "messageActionPollDeleteAnswer", answer: r.object() };
-  },
-  375414334: function(r) {
-    return { _: "messageActionManagedBotCreated", botId: r.int53() };
-  },
-  4197173514: function(r) {
-    return { _: "inputMessagesFilterPoll" };
-  },
-  1216408986: function(r) {
-    return { _: "updateManagedBot", userId: r.int53(), botId: r.int53(), qts: r.int() };
-  },
-  1903653142: function(r) {
-    return { _: "messageEntityDiffInsert", offset: r.int(), length: r.int() };
-  },
-  3334596007: function(r) {
-    return { _: "messageEntityDiffReplace", offset: r.int(), length: r.int(), oldText: r.string() };
-  },
-  106086853: function(r) {
-    return { _: "messageEntityDiffDelete", offset: r.int(), length: r.int() };
-  },
-  429911446: function(r) {
-    var flags = r.uint();
-    return { _: "inputPollAnswer", text: r.object(), media: flags & 1 ? r.object() : void 0 };
-  },
-  1048699e3: function(r) {
-    var flags = r.uint();
-    return { _: "requestPeerTypeCreateBot", botManaged: !!(flags & 1), suggestedName: flags & 2 ? r.string() : void 0, suggestedUsername: flags & 4 ? r.string() : void 0 };
-  },
   1076577429: function(r) {
     return { _: "inputMessageReadMetric", msgId: r.int(), viewId: r.long(), timeInViewMs: r.int(), activeTimeInViewMs: r.int(), heightToViewportRatioPermille: r.int(), seenRangeRatioPermille: r.int() };
   },
@@ -44947,13 +45601,116 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messages.composedMessageWithAI", resultText: r.object(), diffText: flags & 1 ? r.object() : void 0 };
   },
-  422509539: function(r) {
-    var flags = r.uint();
-    return { _: "updateChannelPinnedTopic", pinned: !!(flags & 1), channelId: r.int53(), topicId: r.int() };
+  697941741: function(r) {
+    return { _: "stats.pollStats", votesGraph: r.object() };
   },
-  4263085570: function(r) {
+  535407039: function(r) {
+    return { _: "inputAiComposeToneDefault", tone: r.string() };
+  },
+  125026432: function(r) {
+    return { _: "inputAiComposeToneID", id: r.long(), accessHash: r.long() };
+  },
+  530584407: function(r) {
+    return { _: "inputAiComposeToneSlug", slug: r.string() };
+  },
+  235681199: function(r) {
+    return { _: "inputAiComposeToneSingleUse", customPrompt: r.string() };
+  },
+  3489021609: function(r) {
     var flags = r.uint();
-    return { _: "updateChannelPinnedTopics", channelId: r.int53(), order: flags & 1 ? r.vector(r.int) : void 0 };
+    return { _: "aiComposeTone", creator: !!(flags & 1), id: r.long(), accessHash: r.long(), slug: r.string(), title: r.string(), emojiId: flags & 2 ? r.long() : void 0, prompt: flags & 16 ? r.string() : void 0, installsCount: flags & 4 ? r.int() : void 0, authorId: flags & 8 ? r.int53() : void 0, exampleEnglish: flags & 32 ? r.object() : void 0 };
+  },
+  2611831828: function(r) {
+    return { _: "aiComposeToneDefault", tone: r.string(), emojiId: r.long(), title: r.string() };
+  },
+  3254018307: function(r) {
+    return { _: "aicompose.tonesNotModified" };
+  },
+  1822232318: function(r) {
+    return { _: "aicompose.tones", hash: r.long(), tones: r.vector(r.object), users: r.vector(r.object) };
+  },
+  4057344236: function(r) {
+    return { _: "aiComposeToneExample", from: r.object(), to: r.object() };
+  },
+  3709845395: function(r) {
+    var flags = r.uint();
+    return { _: "bots.accessSettings", restricted: !!(flags & 1), addUsers: flags & 2 ? r.vector(r.object) : void 0 };
+  },
+  1146512295: function(r) {
+    return { _: "messages.chatInviteJoinResultOk", updates: r.object() };
+  },
+  1640638931: function(r) {
+    return { _: "messages.chatInviteJoinResultWebView", botId: r.int53(), queryId: r.long(), users: r.vector(r.object) };
+  },
+  2920622697: function(r) {
+    return { _: "joinChatBotResultApproved" };
+  },
+  251265428: function(r) {
+    return { _: "joinChatBotResultDeclined" };
+  },
+  2560862272: function(r) {
+    return { _: "joinChatBotResultQueued" };
+  },
+  3605248019: function(r) {
+    return { _: "joinChatBotResultWebView", url: r.string() };
+  },
+  2470225303: function(r) {
+    var flags = r.uint();
+    return { _: "webDomainException", domain: r.string(), url: r.string(), title: r.string(), favicon: flags & 1 ? r.long() : void 0 };
+  },
+  3273428814: function(r) {
+    return { _: "account.webBrowserSettingsNotModified" };
+  },
+  2045480115: function(r) {
+    var flags = r.uint();
+    return { _: "account.webBrowserSettings", openExternalBrowser: !!(flags & 1), displayCloseButton: !!(flags & 2), externalExceptions: r.vector(r.object), inappExceptions: r.vector(r.object), hash: r.long() };
+  },
+  2600493611: function(r) {
+    return { _: "inputRichFilePhoto", id: r.string(), photo: r.object() };
+  },
+  2200444349: function(r) {
+    return { _: "inputRichFileDocument", id: r.string(), document: r.object() };
+  },
+  3838069244: function(r) {
+    var flags = r.uint();
+    return { _: "inputRichMessage", rtl: !!(flags & 1), noautolink: !!(flags & 2), blocks: r.vector(r.object), photos: flags & 4 ? r.vector(r.object) : void 0, documents: flags & 8 ? r.vector(r.object) : void 0, users: flags & 16 ? r.vector(r.object) : void 0 };
+  },
+  3670770538: function(r) {
+    var flags = r.uint();
+    return { _: "inputRichMessageHTML", rtl: !!(flags & 1), noautolink: !!(flags & 2), html: r.string(), files: flags & 4 ? r.vector(r.object) : void 0 };
+  },
+  4937516: function(r) {
+    var flags = r.uint();
+    return { _: "inputRichMessageMarkdown", rtl: !!(flags & 1), noautolink: !!(flags & 2), markdown: r.string(), files: flags & 4 ? r.vector(r.object) : void 0 };
+  },
+  3136527755: function(r) {
+    var flags = r.uint();
+    return { _: "richMessage", rtl: !!(flags & 1), part: !!(flags & 2), blocks: r.vector(r.object), photos: r.vector(r.object), documents: r.vector(r.object) };
+  },
+  1981030077: function(r) {
+    var flags = r.uint();
+    return { _: "communityPeer", canViewHistory: !!(flags & 4), visible: flags & 1 ? r.boolean() : void 0, peer: r.object() };
+  },
+  2078997125: function(r) {
+    var flags = r.uint();
+    return { _: "communityPeerRequest", visible: !!(flags & 1), peer: r.object(), requestedBy: r.int53(), date: r.int() };
+  },
+  574926765: function(r) {
+    var flags = r.uint();
+    return { _: "communities.peerLinkRequests", totalCount: r.int(), requests: r.vector(r.object), nextOffset: flags & 1 ? r.string() : void 0, chats: r.vector(r.object), users: r.vector(r.object) };
+  },
+  3653688346: function(r) {
+    var flags = r.uint();
+    return { _: "ephemeralMessage", out: !!(flags & 1), id: r.int(), fromId: r.object(), peerId: r.object(), receiverId: r.int53(), topMsgId: flags & 2 ? r.int() : void 0, date: r.int(), message: r.string(), entities: flags & 4 ? r.vector(r.object) : void 0, media: flags & 8 ? r.object() : void 0, replyMarkup: flags & 16 ? r.object() : void 0, replyTo: flags & 64 ? r.object() : void 0 };
+  },
+  2373472554: function(r) {
+    return { _: "communities.participantJoinedChats", creatorChatIds: r.vector(r.int53), joinedChatIds: r.vector(r.int53), chats: r.vector(r.object), users: r.vector(r.object) };
+  },
+  1107532175: function(r) {
+    return { _: "messages.translatedRichMessage", result: r.vector(r.object) };
+  },
+  1279604680: function(r) {
+    return { _: "messages.composedRichMessageWithAI", result: r.object() };
   },
   _results: {
     "contacts.getContactIDs": function(r) {
@@ -45603,7 +46360,7 @@ var m = {
     w.int53(h(v, "id"));
   },
   "user": function(w, v) {
-    w.uint(829899656);
+    w.uint(2981678211);
     var flags = 0;
     var _accessHash = v.accessHash !== void 0;
     if (_accessHash) flags |= 1;
@@ -45673,6 +46430,10 @@ var m = {
     if (v.botForumView === true) flags2 |= 65536;
     if (v.botForumCanManageTopics === true) flags2 |= 131072;
     if (v.botCanManageBots === true) flags2 |= 262144;
+    if (v.botGuestchat === true) flags2 |= 524288;
+    if (v.botGuard === true) flags2 |= 1048576;
+    var _linkedCommunityId = v.linkedCommunityId !== void 0;
+    if (_linkedCommunityId) flags2 |= 2097152;
     w.uint(flags2);
     w.int53(h(v, "id"));
     if (_accessHash) w.long(v.accessHash);
@@ -45694,6 +46455,7 @@ var m = {
     if (_botActiveUsers) w.int(v.botActiveUsers);
     if (_botVerificationIcon) w.long(v.botVerificationIcon);
     if (_sendPaidMessagesStars) w.long(v.sendPaidMessagesStars);
+    if (_linkedCommunityId) w.int53(v.linkedCommunityId);
   },
   "userProfilePhotoEmpty": function(w) {
     w.uint(1326562017);
@@ -45775,7 +46537,7 @@ var m = {
     w.string(h(v, "title"));
   },
   "channel": function(w, v) {
-    w.uint(473084188);
+    w.uint(3567203526);
     var flags = 0;
     if (v.creator === true) flags |= 1;
     if (v.left === true) flags |= 4;
@@ -45841,6 +46603,8 @@ var m = {
     var _linkedMonoforumId = v.linkedMonoforumId !== void 0;
     if (_linkedMonoforumId) flags2 |= 262144;
     if (v.forumTabs === true) flags2 |= 524288;
+    var _linkedCommunityId = v.linkedCommunityId !== void 0;
+    if (_linkedCommunityId) flags2 |= 1048576;
     w.uint(flags2);
     w.int53(h(v, "id"));
     if (_accessHash) w.long(v.accessHash);
@@ -45863,6 +46627,7 @@ var m = {
     if (_botVerificationIcon) w.long(v.botVerificationIcon);
     if (_sendPaidMessagesStars) w.long(v.sendPaidMessagesStars);
     if (_linkedMonoforumId) w.int53(v.linkedMonoforumId);
+    if (_linkedCommunityId) w.int53(v.linkedCommunityId);
   },
   "channelForbidden": function(w, v) {
     w.uint(399807445);
@@ -45877,6 +46642,40 @@ var m = {
     w.long(h(v, "accessHash"));
     w.string(h(v, "title"));
     if (_untilDate) w.int(v.untilDate);
+  },
+  "communityForbidden": function(w, v) {
+    w.uint(4248623800);
+    var flags = 0;
+    var _accessHash = v.accessHash !== void 0;
+    if (_accessHash) flags |= 8192;
+    w.uint(flags);
+    w.int53(h(v, "id"));
+    if (_accessHash) w.long(v.accessHash);
+    w.string(h(v, "title"));
+  },
+  "community": function(w, v) {
+    w.uint(1710221652);
+    var flags = 0;
+    if (v.creator === true) flags |= 1;
+    if (v.left === true) flags |= 4;
+    if (v.min === true) flags |= 4096;
+    var _accessHash = v.accessHash !== void 0;
+    if (_accessHash) flags |= 8192;
+    var _adminRights = v.adminRights !== void 0;
+    if (_adminRights) flags |= 16384;
+    var _defaultBannedRights = v.defaultBannedRights !== void 0;
+    if (_defaultBannedRights) flags |= 262144;
+    w.uint(flags);
+    var flags2 = 0;
+    if (v.collapsedInDialogs === true) flags2 |= 1048576;
+    w.uint(flags2);
+    w.int53(h(v, "id"));
+    if (_accessHash) w.long(v.accessHash);
+    w.string(h(v, "title"));
+    w.object(h(v, "photo"));
+    w.int(h(v, "date"));
+    if (_adminRights) w.object(v.adminRights);
+    if (_defaultBannedRights) w.object(v.defaultBannedRights);
   },
   "chatFull": function(w, v) {
     w.uint(640893467);
@@ -45930,7 +46729,7 @@ var m = {
     if (_reactionsLimit) w.int(v.reactionsLimit);
   },
   "channelFull": function(w, v) {
-    w.uint(3839931037);
+    w.uint(2689502522);
     var flags = 0;
     var _participantsCount = v.participantsCount !== void 0;
     if (_participantsCount) flags |= 1;
@@ -46027,6 +46826,8 @@ var m = {
     if (_sendPaidMessagesStars) flags2 |= 2097152;
     var _mainTab = v.mainTab !== void 0;
     if (_mainTab) flags2 |= 4194304;
+    var _guardBotId = v.guardBotId !== void 0;
+    if (_guardBotId) flags2 |= 8388608;
     w.uint(flags2);
     w.int53(h(v, "id"));
     w.string(h(v, "about"));
@@ -46073,6 +46874,25 @@ var m = {
     if (_stargiftsCount) w.int(v.stargiftsCount);
     if (_sendPaidMessagesStars) w.long(v.sendPaidMessagesStars);
     if (_mainTab) w.object(v.mainTab);
+    if (_guardBotId) w.int53(v.guardBotId);
+  },
+  "communityFull": function(w, v) {
+    w.uint(3417810183);
+    var flags = 0;
+    var _peerLinkRequestsPending = v.peerLinkRequestsPending !== void 0;
+    if (_peerLinkRequestsPending) flags |= 1;
+    var _adminsCount = v.adminsCount !== void 0;
+    if (_adminsCount) flags |= 2;
+    var _kickedCount = v.kickedCount !== void 0;
+    if (_kickedCount) flags |= 4;
+    w.uint(flags);
+    w.int53(h(v, "id"));
+    w.string(h(v, "about"));
+    w.object(h(v, "chatPhoto"));
+    w.vector(w.object, h(v, "linkedPeers"));
+    if (_adminsCount) w.int(v.adminsCount);
+    if (_kickedCount) w.int(v.kickedCount);
+    if (_peerLinkRequestsPending) w.int(v.peerLinkRequestsPending);
   },
   "chatParticipant": function(w, v) {
     w.uint(954703838);
@@ -46144,7 +46964,7 @@ var m = {
     if (_peerId) w.object(v.peerId);
   },
   "message": function(w, v) {
-    w.uint(988112002);
+    w.uint(1979759059);
     var flags = 0;
     if (v.out === true) flags |= 2;
     var _fwdFrom = v.fwdFrom !== void 0;
@@ -46219,6 +47039,10 @@ var m = {
     if (_summaryFromLanguage) flags2 |= 2048;
     var _fromRank = v.fromRank !== void 0;
     if (_fromRank) flags2 |= 4096;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags2 |= 8192;
+    var _guestchatViaFrom = v.guestchatViaFrom !== void 0;
+    if (_guestchatViaFrom) flags2 |= 524288;
     w.uint(flags2);
     w.int(h(v, "id"));
     if (_fromId) w.object(v.fromId);
@@ -46229,6 +47053,7 @@ var m = {
     if (_fwdFrom) w.object(v.fwdFrom);
     if (_viaBotId) w.int53(v.viaBotId);
     if (_viaBusinessBotId) w.int53(v.viaBusinessBotId);
+    if (_guestchatViaFrom) w.object(v.guestchatViaFrom);
     if (_replyTo) w.object(v.replyTo);
     w.int(h(v, "date"));
     w.string(h(v, "message"));
@@ -46252,6 +47077,7 @@ var m = {
     if (_suggestedPost) w.object(v.suggestedPost);
     if (_scheduleRepeatPeriod) w.int(v.scheduleRepeatPeriod);
     if (_summaryFromLanguage) w.string(v.summaryFromLanguage);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messageService": function(w, v) {
     w.uint(2055212554);
@@ -47046,6 +47872,26 @@ var m = {
     w.boolean(h(v, "prevValue"));
     w.boolean(h(v, "newValue"));
   },
+  "messageActionPollAppendAnswer": function(w, v) {
+    w.uint(2644626796);
+    w.object(h(v, "answer"));
+  },
+  "messageActionPollDeleteAnswer": function(w, v) {
+    w.uint(966161628);
+    w.object(h(v, "answer"));
+  },
+  "messageActionManagedBotCreated": function(w, v) {
+    w.uint(375414334);
+    w.int53(h(v, "botId"));
+  },
+  "messageActionChangeCommunity": function(w, v) {
+    w.uint(1562426088);
+    var flags = 0;
+    var _communityId = v.communityId !== void 0;
+    if (_communityId) flags |= 1;
+    w.uint(flags);
+    if (_communityId) w.int53(v.communityId);
+  },
   "dialog": function(w, v) {
     w.uint(4236900339);
     var flags = 0;
@@ -47087,6 +47933,14 @@ var m = {
     w.int(h(v, "unreadUnmutedPeersCount"));
     w.int(h(v, "unreadMutedMessagesCount"));
     w.int(h(v, "unreadUnmutedMessagesCount"));
+  },
+  "dialogCommunity": function(w, v) {
+    w.uint(4153018739);
+    var flags = 0;
+    if (v.pinned === true) flags |= 4;
+    w.uint(flags);
+    w.int53(h(v, "communityId"));
+    w.object(h(v, "notifySettings"));
   },
   "photoEmpty": function(w, v) {
     w.uint(590459437);
@@ -47174,11 +48028,12 @@ var m = {
     w.object(h(v, "authorization"));
   },
   "auth.sentCodePaymentRequired": function(w, v) {
-    w.uint(3767884348);
+    w.uint(4169301695);
     w.string(h(v, "storeProduct"));
     w.string(h(v, "phoneCodeHash"));
     w.string(h(v, "supportEmailAddress"));
     w.string(h(v, "supportEmailSubject"));
+    w.int(h(v, "premiumDays"));
     w.string(h(v, "currency"));
     w.long(h(v, "amount"));
   },
@@ -47228,6 +48083,10 @@ var m = {
     w.uint(1548122514);
     w.object(h(v, "peer"));
     w.int(h(v, "topMsgId"));
+  },
+  "inputNotifyCommunity": function(w, v) {
+    w.uint(666573532);
+    w.object(h(v, "community"));
   },
   "inputPeerNotifySettings": function(w, v) {
     w.uint(3402328802);
@@ -47712,6 +48571,9 @@ var m = {
   },
   "inputMessagesFilterPinned": function(w) {
     w.uint(464520273);
+  },
+  "inputMessagesFilterPoll": function(w) {
+    w.uint(4197173514);
   },
   "updateNewMessage": function(w, v) {
     w.uint(522914557);
@@ -48420,13 +49282,18 @@ var m = {
     w.vector(w.int53, h(v, "recentRequesters"));
   },
   "updateBotChatInviteRequester": function(w, v) {
-    w.uint(299870598);
+    w.uint(2092125561);
+    var flags = 0;
+    var _queryId = v.queryId !== void 0;
+    if (_queryId) flags |= 1;
+    w.uint(flags);
     w.object(h(v, "peer"));
     w.int(h(v, "date"));
     w.int53(h(v, "userId"));
     w.string(h(v, "about"));
     w.object(h(v, "invite"));
     w.int(h(v, "qts"));
+    if (_queryId) w.long(v.queryId);
   },
   "updateMessageReactions": function(w, v) {
     w.uint(506035194);
@@ -48771,6 +49638,97 @@ var m = {
     w.int53(h(v, "userId"));
     w.string(h(v, "rank"));
     w.int(h(v, "version"));
+  },
+  "updateManagedBot": function(w, v) {
+    w.uint(1216408986);
+    w.int53(h(v, "userId"));
+    w.int53(h(v, "botId"));
+    w.int(h(v, "qts"));
+  },
+  "updateBotGuestChatQuery": function(w, v) {
+    w.uint(3453225277);
+    var flags = 0;
+    var _referenceMessages = v.referenceMessages && v.referenceMessages.length;
+    if (_referenceMessages) flags |= 1;
+    w.uint(flags);
+    w.long(h(v, "queryId"));
+    w.object(h(v, "message"));
+    if (_referenceMessages) w.vector(w.object, v.referenceMessages);
+    w.int(h(v, "qts"));
+  },
+  "updateAiComposeTones": function(w) {
+    w.uint(2349830651);
+  },
+  "updateJoinChatWebViewDecision": function(w, v) {
+    w.uint(3182198384);
+    w.object(h(v, "peer"));
+    w.long(h(v, "queryId"));
+    w.object(h(v, "result"));
+  },
+  "updateNewBotConnection": function(w, v) {
+    w.uint(2988475302);
+    var flags = 0;
+    if (v.confirmed === true) flags |= 1;
+    var _date = v.date !== void 0;
+    var _device = v.device !== void 0;
+    var _location = v.location !== void 0;
+    var _flags_1 = _date || _device || _location;
+    if (_flags_1) flags |= 2;
+    w.uint(flags);
+    w.int53(h(v, "botId"));
+    if (_flags_1) w.int(v.date);
+    if (_flags_1) w.string(v.device);
+    if (_flags_1) w.string(v.location);
+  },
+  "updateWebBrowserSettings": function(w, v) {
+    w.uint(3281660638);
+    var flags = 0;
+    if (v.openExternalBrowser === true) flags |= 1;
+    if (v.displayCloseButton === true) flags |= 2;
+    w.uint(flags);
+  },
+  "updateWebBrowserException": function(w, v) {
+    w.uint(335872721);
+    var flags = 0;
+    var _openExternalBrowser = v.openExternalBrowser !== void 0;
+    if (_openExternalBrowser) flags |= 1;
+    if (v.delete === true) flags |= 2;
+    w.uint(flags);
+    if (_openExternalBrowser) w.boolean(v.openExternalBrowser);
+    w.object(h(v, "exception"));
+  },
+  "updateNewEphemeralMessage": function(w, v) {
+    w.uint(549239713);
+    w.object(h(v, "message"));
+  },
+  "updateDeleteEphemeralMessages": function(w, v) {
+    w.uint(1457257720);
+    w.object(h(v, "peer"));
+    w.vector(w.int, h(v, "ids"));
+  },
+  "updateEditEphemeralMessage": function(w, v) {
+    w.uint(1270583041);
+    w.object(h(v, "message"));
+  },
+  "updateEphemeralBotCallbackQuery": function(w, v) {
+    w.uint(2604140386);
+    w.long(h(v, "queryId"));
+    w.int53(h(v, "userId"));
+    w.object(h(v, "peer"));
+    w.int(h(v, "msgId"));
+    w.bytes(h(v, "data"));
+    w.object(h(v, "message"));
+  },
+  "updateBotStarsSubscription": function(w, v) {
+    w.uint(1812827683);
+    var flags = 0;
+    if (v.canceled === true) flags |= 1;
+    if (v.paymentFailed === true) flags |= 2;
+    if (v.restored === true) flags |= 4;
+    w.uint(flags);
+    w.int53(h(v, "userId"));
+    w.bytes(h(v, "payload"));
+    w.int(h(v, "qts"));
   },
   "updates.state": function(w, v) {
     w.uint(2775329342);
@@ -49234,6 +50192,10 @@ var m = {
     w.object(h(v, "peer"));
     w.int(h(v, "topMsgId"));
   },
+  "notifyCommunity": function(w, v) {
+    w.uint(3191302553);
+    w.int53(h(v, "communityId"));
+  },
   "sendMessageTypingAction": function(w) {
     w.uint(381645902);
   },
@@ -49302,6 +50264,16 @@ var m = {
     w.uint(929929052);
     w.long(h(v, "randomId"));
     w.object(h(v, "text"));
+  },
+  "inputSendMessageRichMessageDraftAction": function(w, v) {
+    w.uint(3803331409);
+    w.long(h(v, "randomId"));
+    w.object(h(v, "richMessage"));
+  },
+  "sendMessageRichMessageDraftAction": function(w, v) {
+    w.uint(2731222265);
+    w.long(h(v, "randomId"));
+    w.object(h(v, "richMessage"));
   },
   "contacts.found": function(w, v) {
     w.uint(3004386717);
@@ -49921,7 +50893,10 @@ var m = {
     w.uint(3556320491);
   },
   "botCommand": function(w, v) {
-    w.uint(3262826695);
+    w.uint(2555565778);
+    var flags = 0;
+    if (v.ephemeral === true) flags |= 1;
+    w.uint(flags);
     w.string(h(v, "command"));
     w.string(h(v, "description"));
   },
@@ -50320,6 +51295,22 @@ var m = {
     w.int(h(v, "length"));
     w.int(h(v, "date"));
   },
+  "messageEntityDiffInsert": function(w, v) {
+    w.uint(1903653142);
+    w.int(h(v, "offset"));
+    w.int(h(v, "length"));
+  },
+  "messageEntityDiffReplace": function(w, v) {
+    w.uint(3334596007);
+    w.int(h(v, "offset"));
+    w.int(h(v, "length"));
+    w.string(h(v, "oldText"));
+  },
+  "messageEntityDiffDelete": function(w, v) {
+    w.uint(106086853);
+    w.int(h(v, "offset"));
+    w.int(h(v, "length"));
+  },
   "inputChannelEmpty": function(w) {
     w.uint(4002160262);
   },
@@ -50649,6 +51640,15 @@ var m = {
     w.string(h(v, "url"));
     if (_replyMarkup) w.object(v.replyMarkup);
   },
+  "inputBotInlineMessageRichMessage": function(w, v) {
+    w.uint(3023959404);
+    var flags = 0;
+    var _replyMarkup = v.replyMarkup !== void 0;
+    if (_replyMarkup) flags |= 4;
+    w.uint(flags);
+    if (_replyMarkup) w.object(v.replyMarkup);
+    w.object(h(v, "richMessage"));
+  },
   "inputBotInlineResult": function(w, v) {
     w.uint(2294256409);
     var flags = 0;
@@ -50805,6 +51805,15 @@ var m = {
     if (_entities) w.vector(w.object, v.entities);
     w.string(h(v, "url"));
     if (_replyMarkup) w.object(v.replyMarkup);
+  },
+  "botInlineMessageRichMessage": function(w, v) {
+    w.uint(174161531);
+    var flags = 0;
+    var _replyMarkup = v.replyMarkup !== void 0;
+    if (_replyMarkup) flags |= 4;
+    w.uint(flags);
+    if (_replyMarkup) w.object(v.replyMarkup);
+    w.object(h(v, "richMessage"));
   },
   "botInlineResult": function(w, v) {
     w.uint(295067450);
@@ -51090,6 +52099,9 @@ var m = {
   "topPeerCategoryBotsApp": function(w) {
     w.uint(4255022060);
   },
+  "topPeerCategoryBotsGuestChat": function(w) {
+    w.uint(1814361053);
+  },
   "topPeerCategoryPeers": function(w, v) {
     w.uint(4219683473);
     w.object(h(v, "category"));
@@ -51117,7 +52129,7 @@ var m = {
     if (_date) w.int(v.date);
   },
   "draftMessage": function(w, v) {
-    w.uint(2531960299);
+    w.uint(1627271828);
     var flags = 0;
     if (v.noWebpage === true) flags |= 2;
     var _entities = v.entities && v.entities.length;
@@ -51131,6 +52143,8 @@ var m = {
     if (_effect) flags |= 128;
     var _suggestedPost = v.suggestedPost !== void 0;
     if (_suggestedPost) flags |= 256;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 512;
     w.uint(flags);
     if (_replyTo) w.object(v.replyTo);
     w.string(h(v, "message"));
@@ -51139,6 +52153,7 @@ var m = {
     w.int(h(v, "date"));
     if (_effect) w.long(v.effect);
     if (_suggestedPost) w.object(v.suggestedPost);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messages.featuredStickersNotModified": function(w, v) {
     w.uint(3336309862);
@@ -51317,6 +52332,74 @@ var m = {
     w.object(h(v, "text"));
     w.string(h(v, "name"));
   },
+  "textMath": function(w, v) {
+    w.uint(2637081751);
+    w.string(h(v, "source"));
+  },
+  "textCustomEmoji": function(w, v) {
+    w.uint(2724288192);
+    w.long(h(v, "documentId"));
+    w.string(h(v, "alt"));
+  },
+  "textSpoiler": function(w, v) {
+    w.uint(1277844834);
+    w.object(h(v, "text"));
+  },
+  "textMention": function(w, v) {
+    w.uint(3441741636);
+    w.object(h(v, "text"));
+  },
+  "textHashtag": function(w, v) {
+    w.uint(1368728810);
+    w.object(h(v, "text"));
+  },
+  "textBotCommand": function(w, v) {
+    w.uint(50276819);
+    w.object(h(v, "text"));
+  },
+  "textCashtag": function(w, v) {
+    w.uint(2073958401);
+    w.object(h(v, "text"));
+  },
+  "textAutoUrl": function(w, v) {
+    w.uint(2892661674);
+    w.object(h(v, "text"));
+  },
+  "textAutoEmail": function(w, v) {
+    w.uint(3310789725);
+    w.object(h(v, "text"));
+  },
+  "textAutoPhone": function(w, v) {
+    w.uint(616720265);
+    w.object(h(v, "text"));
+  },
+  "textBankCard": function(w, v) {
+    w.uint(3109454125);
+    w.object(h(v, "text"));
+  },
+  "textMentionName": function(w, v) {
+    w.uint(27917308);
+    w.object(h(v, "text"));
+    w.int53(h(v, "userId"));
+  },
+  "textDate": function(w, v) {
+    w.uint(2780061227);
+    var flags = 0;
+    if (v.relative === true) flags |= 1;
+    if (v.shortTime === true) flags |= 2;
+    if (v.longTime === true) flags |= 4;
+    if (v.shortDate === true) flags |= 8;
+    if (v.longDate === true) flags |= 16;
+    if (v.dayOfWeek === true) flags |= 32;
+    w.uint(flags);
+    w.object(h(v, "text"));
+    w.int(h(v, "date"));
+  },
+  "textDiff": function(w, v) {
+    w.uint(2525416272);
+    w.object(h(v, "text"));
+    w.object(h(v, "oldText"));
+  },
   "pageBlockUnsupported": function(w) {
     w.uint(324435594);
   },
@@ -51382,6 +52465,7 @@ var m = {
     var _webpageId = v.webpageId !== void 0;
     var _flags_0 = _url || _webpageId;
     if (_flags_0) flags |= 1;
+    if (v.spoiler === true) flags |= 2;
     w.uint(flags);
     w.long(h(v, "photoId"));
     w.object(h(v, "caption"));
@@ -51393,6 +52477,7 @@ var m = {
     var flags = 0;
     if (v.autoplay === true) flags |= 1;
     if (v.loop === true) flags |= 2;
+    if (v.spoiler === true) flags |= 4;
     w.uint(flags);
     w.long(h(v, "videoId"));
     w.object(h(v, "caption"));
@@ -51467,8 +52552,17 @@ var m = {
     w.vector(w.object, h(v, "rows"));
   },
   "pageBlockOrderedList": function(w, v) {
-    w.uint(2592793057);
+    w.uint(534181569);
+    var flags = 0;
+    var _start = v.start !== void 0;
+    if (_start) flags |= 1;
+    var _type = v.type !== void 0;
+    if (_type) flags |= 2;
+    if (v.reversed === true) flags |= 4;
+    w.uint(flags);
     w.vector(w.object, h(v, "items"));
+    if (_start) w.int(v.start);
+    if (_type) w.string(v.type);
   },
   "pageBlockDetails": function(w, v) {
     w.uint(1987480557);
@@ -51489,6 +52583,51 @@ var m = {
     w.int(h(v, "zoom"));
     w.int(h(v, "w"));
     w.int(h(v, "h"));
+    w.object(h(v, "caption"));
+  },
+  "pageBlockHeading1": function(w, v) {
+    w.uint(3137275695);
+    w.object(h(v, "text"));
+  },
+  "pageBlockHeading2": function(w, v) {
+    w.uint(158018284);
+    w.object(h(v, "text"));
+  },
+  "pageBlockHeading3": function(w, v) {
+    w.uint(1743204781);
+    w.object(h(v, "text"));
+  },
+  "pageBlockHeading4": function(w, v) {
+    w.uint(3039983403);
+    w.object(h(v, "text"));
+  },
+  "pageBlockHeading5": function(w, v) {
+    w.uint(3686689898);
+    w.object(h(v, "text"));
+  },
+  "pageBlockHeading6": function(w, v) {
+    w.uint(1747599785);
+    w.object(h(v, "text"));
+  },
+  "pageBlockMath": function(w, v) {
+    w.uint(1493699616);
+    w.string(h(v, "source"));
+  },
+  "pageBlockThinking": function(w, v) {
+    w.uint(1009361890);
+    w.object(h(v, "text"));
+  },
+  "inputPageBlockMap": function(w, v) {
+    w.uint(1464557951);
+    w.object(h(v, "geo"));
+    w.int(h(v, "zoom"));
+    w.int(h(v, "w"));
+    w.int(h(v, "h"));
+    w.object(h(v, "caption"));
+  },
+  "pageBlockBlockquoteBlocks": function(w, v) {
+    w.uint(242108356);
+    w.vector(w.object, h(v, "blocks"));
     w.object(h(v, "caption"));
   },
   "phoneCallDiscardReasonMissed": function(w) {
@@ -52381,6 +53520,10 @@ var m = {
     w.uint(1684014375);
     w.int(h(v, "folderId"));
   },
+  "inputDialogPeerCommunity": function(w, v) {
+    w.uint(1777300164);
+    w.object(h(v, "community"));
+  },
   "dialogPeer": function(w, v) {
     w.uint(3849174789);
     w.object(h(v, "peer"));
@@ -52388,6 +53531,10 @@ var m = {
   "dialogPeerFolder": function(w, v) {
     w.uint(1363483106);
     w.int(h(v, "folderId"));
+  },
+  "dialogPeerCommunity": function(w, v) {
+    w.uint(795199716);
+    w.int53(h(v, "communityId"));
   },
   "messages.foundStickerSetsNotModified": function(w) {
     w.uint(223655517);
@@ -52779,22 +53926,54 @@ var m = {
     w.object(h(v, "credit"));
   },
   "pageListItemText": function(w, v) {
-    w.uint(3106911949);
+    w.uint(794323004);
+    var flags = 0;
+    if (v.checkbox === true) flags |= 1;
+    if (v.checked === true) flags |= 2;
+    w.uint(flags);
     w.object(h(v, "text"));
   },
   "pageListItemBlocks": function(w, v) {
-    w.uint(635466748);
+    w.uint(1674209194);
+    var flags = 0;
+    if (v.checkbox === true) flags |= 1;
+    if (v.checked === true) flags |= 2;
+    w.uint(flags);
     w.vector(w.object, h(v, "blocks"));
   },
   "pageListOrderedItemText": function(w, v) {
-    w.uint(1577484359);
-    w.string(h(v, "num"));
+    w.uint(352522633);
+    var flags = 0;
+    if (v.checkbox === true) flags |= 1;
+    if (v.checked === true) flags |= 2;
+    var _num = v.num !== void 0;
+    if (_num) flags |= 4;
+    var _value = v.value !== void 0;
+    if (_value) flags |= 8;
+    var _type = v.type !== void 0;
+    if (_type) flags |= 16;
+    w.uint(flags);
+    if (_num) w.string(v.num);
     w.object(h(v, "text"));
+    if (_value) w.int(v.value);
+    if (_type) w.string(v.type);
   },
   "pageListOrderedItemBlocks": function(w, v) {
-    w.uint(2564655414);
-    w.string(h(v, "num"));
+    w.uint(2415056368);
+    var flags = 0;
+    if (v.checkbox === true) flags |= 1;
+    if (v.checked === true) flags |= 2;
+    var _num = v.num !== void 0;
+    if (_num) flags |= 4;
+    var _value = v.value !== void 0;
+    if (_value) flags |= 8;
+    var _type = v.type !== void 0;
+    if (_type) flags |= 16;
+    w.uint(flags);
+    if (_num) w.string(v.num);
     w.vector(w.object, h(v, "blocks"));
+    if (_value) w.int(v.value);
+    if (_type) w.string(v.type);
   },
   "pageRelatedArticle": function(w, v) {
     w.uint(3012615176);
@@ -52863,8 +54042,17 @@ var m = {
     if (_flags_1) w.object(v.addedBy);
     if (_flags_1) w.int(v.date);
   },
+  "inputPollAnswer": function(w, v) {
+    w.uint(429911446);
+    var flags = 0;
+    var _media = v.media !== void 0;
+    if (_media) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "text"));
+    if (_media) w.object(v.media);
+  },
   "poll": function(w, v) {
-    w.uint(3091356649);
+    w.uint(2523803071);
     w.long(h(v, "id"));
     var flags = 0;
     if (v.closed === true) flags |= 1;
@@ -52880,11 +54068,15 @@ var m = {
     if (v.shuffleAnswers === true) flags |= 256;
     if (v.hideResultsUntilClose === true) flags |= 512;
     if (v.creator === true) flags |= 1024;
+    if (v.subscribersOnly === true) flags |= 2048;
+    var _countriesIso2 = v.countriesIso2 && v.countriesIso2.length;
+    if (_countriesIso2) flags |= 4096;
     w.uint(flags);
     w.object(h(v, "question"));
     w.vector(w.object, h(v, "answers"));
     if (_closePeriod) w.int(v.closePeriod);
     if (_closeDate) w.int(v.closeDate);
+    if (_countriesIso2) w.vector(w.string, v.countriesIso2);
     w.long(h(v, "hash"));
   },
   "pollAnswerVoters": function(w, v) {
@@ -52918,6 +54110,7 @@ var m = {
     var _solutionMedia = v.solutionMedia !== void 0;
     if (_solutionMedia) flags |= 32;
     if (v.hasUnreadVotes === true) flags |= 64;
+    if (v.canViewStats === true) flags |= 128;
     w.uint(flags);
     if (_results) w.vector(w.object, v.results);
     if (_totalVoters) w.int(v.totalVoters);
@@ -52954,6 +54147,7 @@ var m = {
     if (v.deleteStories === true) flags |= 65536;
     if (v.manageDirectMessages === true) flags |= 131072;
     if (v.manageRanks === true) flags |= 262144;
+    if (v.manageLinkedPeers === true) flags |= 524288;
     w.uint(flags);
   },
   "chatBannedRights": function(w, v) {
@@ -52980,6 +54174,8 @@ var m = {
     if (v.sendDocs === true) flags |= 16777216;
     if (v.sendPlain === true) flags |= 33554432;
     if (v.editRank === true) flags |= 67108864;
+    if (v.sendReactions === true) flags |= 134217728;
+    if (v.manageLinkedPeers === true) flags |= 268435456;
     w.uint(flags);
     w.int(h(v, "untilDate"));
   },
@@ -53357,6 +54553,10 @@ var m = {
     w.object(h(v, "gift"));
     w.int(h(v, "endDate"));
   },
+  "webPageAttributeAiComposeTone": function(w, v) {
+    w.uint(2005007896);
+    w.long(h(v, "emojiId"));
+  },
   "messages.votesList": function(w, v) {
     w.uint(1218005070);
     var flags = 0;
@@ -53687,6 +54887,7 @@ var m = {
     if (_todoItemId) flags |= 2048;
     var _pollOption = v.pollOption !== void 0;
     if (_pollOption) flags |= 4096;
+    if (v.replyToEphemeral === true) flags |= 8192;
     w.uint(flags);
     if (_replyToMsgId) w.int(v.replyToMsgId);
     if (_replyToPeerId) w.object(v.replyToPeerId);
@@ -54298,6 +55499,7 @@ var m = {
     if (_queryId) flags |= 1;
     if (v.fullsize === true) flags |= 2;
     if (v.fullscreen === true) flags |= 4;
+    if (v.sameOrigin === true) flags |= 8;
     w.uint(flags);
     if (_queryId) w.long(v.queryId);
     w.string(h(v, "url"));
@@ -54580,12 +55782,13 @@ var m = {
     w.int(h(v, "users"));
   },
   "inputStorePaymentAuthCode": function(w, v) {
-    w.uint(2612159341);
+    w.uint(1069645911);
     var flags = 0;
     if (v.restore === true) flags |= 1;
     w.uint(flags);
     w.string(h(v, "phoneNumber"));
     w.string(h(v, "phoneCodeHash"));
+    w.int(h(v, "premiumDays"));
     w.string(h(v, "currency"));
     w.long(h(v, "amount"));
   },
@@ -54865,6 +56068,18 @@ var m = {
     if (_hasUsername) w.boolean(v.hasUsername);
     if (_userAdminRights) w.object(v.userAdminRights);
     if (_botAdminRights) w.object(v.botAdminRights);
+  },
+  "requestPeerTypeCreateBot": function(w, v) {
+    w.uint(1048699e3);
+    var flags = 0;
+    if (v.botManaged === true) flags |= 1;
+    var _suggestedName = v.suggestedName !== void 0;
+    if (_suggestedName) flags |= 2;
+    var _suggestedUsername = v.suggestedUsername !== void 0;
+    if (_suggestedUsername) flags |= 4;
+    w.uint(flags);
+    if (_suggestedName) w.string(v.suggestedName);
+    if (_suggestedUsername) w.string(v.suggestedUsername);
   },
   "emojiListNotModified": function(w) {
     w.uint(1209970170);
@@ -55259,6 +56474,10 @@ var m = {
   "inputReplyToMonoForum": function(w, v) {
     w.uint(1775660101);
     w.object(h(v, "monoforumPeerId"));
+  },
+  "inputReplyToEphemeralMessage": function(w, v) {
+    w.uint(1092204894);
+    w.int(h(v, "id"));
   },
   "exportedStoryLink": function(w, v) {
     w.uint(1070138683);
@@ -55914,12 +57133,21 @@ var m = {
     w.uint(1603398491);
   },
   "connectedBot": function(w, v) {
-    w.uint(3445908332);
+    w.uint(54448129);
     var flags = 0;
+    var _device = v.device !== void 0;
+    if (_device) flags |= 1;
+    var _date = v.date !== void 0;
+    if (_date) flags |= 2;
+    var _location = v.location !== void 0;
+    if (_location) flags |= 4;
     w.uint(flags);
     w.int53(h(v, "botId"));
     w.object(h(v, "recipients"));
     w.object(h(v, "rights"));
+    if (_device) w.string(v.device);
+    if (_date) w.int(v.date);
+    if (_location) w.string(v.location);
   },
   "account.connectedBots": function(w, v) {
     w.uint(400029819);
@@ -57541,64 +58769,6 @@ var m = {
     w.uint(flags);
     if (_icon) w.long(v.icon);
   },
-  "messageActionPollAppendAnswer": function(w, v) {
-    w.uint(2644626796);
-    w.object(h(v, "answer"));
-  },
-  "messageActionPollDeleteAnswer": function(w, v) {
-    w.uint(966161628);
-    w.object(h(v, "answer"));
-  },
-  "messageActionManagedBotCreated": function(w, v) {
-    w.uint(375414334);
-    w.int53(h(v, "botId"));
-  },
-  "inputMessagesFilterPoll": function(w) {
-    w.uint(4197173514);
-  },
-  "updateManagedBot": function(w, v) {
-    w.uint(1216408986);
-    w.int53(h(v, "userId"));
-    w.int53(h(v, "botId"));
-    w.int(h(v, "qts"));
-  },
-  "messageEntityDiffInsert": function(w, v) {
-    w.uint(1903653142);
-    w.int(h(v, "offset"));
-    w.int(h(v, "length"));
-  },
-  "messageEntityDiffReplace": function(w, v) {
-    w.uint(3334596007);
-    w.int(h(v, "offset"));
-    w.int(h(v, "length"));
-    w.string(h(v, "oldText"));
-  },
-  "messageEntityDiffDelete": function(w, v) {
-    w.uint(106086853);
-    w.int(h(v, "offset"));
-    w.int(h(v, "length"));
-  },
-  "inputPollAnswer": function(w, v) {
-    w.uint(429911446);
-    var flags = 0;
-    var _media = v.media !== void 0;
-    if (_media) flags |= 1;
-    w.uint(flags);
-    w.object(h(v, "text"));
-    if (_media) w.object(v.media);
-  },
-  "requestPeerTypeCreateBot": function(w, v) {
-    w.uint(1048699e3);
-    var flags = 0;
-    if (v.botManaged === true) flags |= 1;
-    var _suggestedName = v.suggestedName !== void 0;
-    if (_suggestedName) flags |= 2;
-    var _suggestedUsername = v.suggestedUsername !== void 0;
-    if (_suggestedUsername) flags |= 4;
-    w.uint(flags);
-    if (_suggestedName) w.string(v.suggestedName);
-    if (_suggestedUsername) w.string(v.suggestedUsername);
-  },
   "inputMessageReadMetric": function(w, v) {
     w.uint(1076577429);
     w.int(h(v, "msgId"));
@@ -57625,22 +58795,259 @@ var m = {
     w.object(h(v, "resultText"));
     if (_diffText) w.object(v.diffText);
   },
-  "updateChannelPinnedTopic": function(w, v) {
-    w.uint(422509539);
-    var flags = 0;
-    if (v.pinned === true) flags |= 1;
-    w.uint(flags);
-    w.int53(h(v, "channelId"));
-    w.int(h(v, "topicId"));
+  "stats.pollStats": function(w, v) {
+    w.uint(697941741);
+    w.object(h(v, "votesGraph"));
   },
-  "updateChannelPinnedTopics": function(w, v) {
-    w.uint(4263085570);
+  "inputAiComposeToneDefault": function(w, v) {
+    w.uint(535407039);
+    w.string(h(v, "tone"));
+  },
+  "inputAiComposeToneID": function(w, v) {
+    w.uint(125026432);
+    w.long(h(v, "id"));
+    w.long(h(v, "accessHash"));
+  },
+  "inputAiComposeToneSlug": function(w, v) {
+    w.uint(530584407);
+    w.string(h(v, "slug"));
+  },
+  "inputAiComposeToneSingleUse": function(w, v) {
+    w.uint(235681199);
+    w.string(h(v, "customPrompt"));
+  },
+  "aiComposeTone": function(w, v) {
+    w.uint(3489021609);
     var flags = 0;
-    var _order = v.order && v.order.length;
-    if (_order) flags |= 1;
+    if (v.creator === true) flags |= 1;
+    var _emojiId = v.emojiId !== void 0;
+    if (_emojiId) flags |= 2;
+    var _installsCount = v.installsCount !== void 0;
+    if (_installsCount) flags |= 4;
+    var _authorId = v.authorId !== void 0;
+    if (_authorId) flags |= 8;
+    var _prompt = v.prompt !== void 0;
+    if (_prompt) flags |= 16;
+    var _exampleEnglish = v.exampleEnglish !== void 0;
+    if (_exampleEnglish) flags |= 32;
     w.uint(flags);
-    w.int53(h(v, "channelId"));
-    if (_order) w.vector(w.int, v.order);
+    w.long(h(v, "id"));
+    w.long(h(v, "accessHash"));
+    w.string(h(v, "slug"));
+    w.string(h(v, "title"));
+    if (_emojiId) w.long(v.emojiId);
+    if (_prompt) w.string(v.prompt);
+    if (_installsCount) w.int(v.installsCount);
+    if (_authorId) w.int53(v.authorId);
+    if (_exampleEnglish) w.object(v.exampleEnglish);
+  },
+  "aiComposeToneDefault": function(w, v) {
+    w.uint(2611831828);
+    w.string(h(v, "tone"));
+    w.long(h(v, "emojiId"));
+    w.string(h(v, "title"));
+  },
+  "aicompose.tonesNotModified": function(w) {
+    w.uint(3254018307);
+  },
+  "aicompose.tones": function(w, v) {
+    w.uint(1822232318);
+    w.long(h(v, "hash"));
+    w.vector(w.object, h(v, "tones"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "aiComposeToneExample": function(w, v) {
+    w.uint(4057344236);
+    w.object(h(v, "from"));
+    w.object(h(v, "to"));
+  },
+  "bots.accessSettings": function(w, v) {
+    w.uint(3709845395);
+    var flags = 0;
+    if (v.restricted === true) flags |= 1;
+    var _addUsers = v.addUsers && v.addUsers.length;
+    if (_addUsers) flags |= 2;
+    w.uint(flags);
+    if (_addUsers) w.vector(w.object, v.addUsers);
+  },
+  "messages.chatInviteJoinResultOk": function(w, v) {
+    w.uint(1146512295);
+    w.object(h(v, "updates"));
+  },
+  "messages.chatInviteJoinResultWebView": function(w, v) {
+    w.uint(1640638931);
+    w.int53(h(v, "botId"));
+    w.long(h(v, "queryId"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "joinChatBotResultApproved": function(w) {
+    w.uint(2920622697);
+  },
+  "joinChatBotResultDeclined": function(w) {
+    w.uint(251265428);
+  },
+  "joinChatBotResultQueued": function(w) {
+    w.uint(2560862272);
+  },
+  "joinChatBotResultWebView": function(w, v) {
+    w.uint(3605248019);
+    w.string(h(v, "url"));
+  },
+  "webDomainException": function(w, v) {
+    w.uint(2470225303);
+    var flags = 0;
+    var _favicon = v.favicon !== void 0;
+    if (_favicon) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "domain"));
+    w.string(h(v, "url"));
+    w.string(h(v, "title"));
+    if (_favicon) w.long(v.favicon);
+  },
+  "account.webBrowserSettingsNotModified": function(w) {
+    w.uint(3273428814);
+  },
+  "account.webBrowserSettings": function(w, v) {
+    w.uint(2045480115);
+    var flags = 0;
+    if (v.openExternalBrowser === true) flags |= 1;
+    if (v.displayCloseButton === true) flags |= 2;
+    w.uint(flags);
+    w.vector(w.object, h(v, "externalExceptions"));
+    w.vector(w.object, h(v, "inappExceptions"));
+    w.long(h(v, "hash"));
+  },
+  "inputRichFilePhoto": function(w, v) {
+    w.uint(2600493611);
+    w.string(h(v, "id"));
+    w.object(h(v, "photo"));
+  },
+  "inputRichFileDocument": function(w, v) {
+    w.uint(2200444349);
+    w.string(h(v, "id"));
+    w.object(h(v, "document"));
+  },
+  "inputRichMessage": function(w, v) {
+    w.uint(3838069244);
+    var flags = 0;
+    if (v.rtl === true) flags |= 1;
+    if (v.noautolink === true) flags |= 2;
+    var _photos = v.photos && v.photos.length;
+    if (_photos) flags |= 4;
+    var _documents = v.documents && v.documents.length;
+    if (_documents) flags |= 8;
+    var _users = v.users && v.users.length;
+    if (_users) flags |= 16;
+    w.uint(flags);
+    w.vector(w.object, h(v, "blocks"));
+    if (_photos) w.vector(w.object, v.photos);
+    if (_documents) w.vector(w.object, v.documents);
+    if (_users) w.vector(w.object, v.users);
+  },
+  "inputRichMessageHTML": function(w, v) {
+    w.uint(3670770538);
+    var flags = 0;
+    if (v.rtl === true) flags |= 1;
+    if (v.noautolink === true) flags |= 2;
+    var _files = v.files && v.files.length;
+    if (_files) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "html"));
+    if (_files) w.vector(w.object, v.files);
+  },
+  "inputRichMessageMarkdown": function(w, v) {
+    w.uint(4937516);
+    var flags = 0;
+    if (v.rtl === true) flags |= 1;
+    if (v.noautolink === true) flags |= 2;
+    var _files = v.files && v.files.length;
+    if (_files) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "markdown"));
+    if (_files) w.vector(w.object, v.files);
+  },
+  "richMessage": function(w, v) {
+    w.uint(3136527755);
+    var flags = 0;
+    if (v.rtl === true) flags |= 1;
+    if (v.part === true) flags |= 2;
+    w.uint(flags);
+    w.vector(w.object, h(v, "blocks"));
+    w.vector(w.object, h(v, "photos"));
+    w.vector(w.object, h(v, "documents"));
+  },
+  "communityPeer": function(w, v) {
+    w.uint(1981030077);
+    var flags = 0;
+    var _visible = v.visible !== void 0;
+    if (_visible) flags |= 1;
+    if (v.canViewHistory === true) flags |= 4;
+    w.uint(flags);
+    if (_visible) w.boolean(v.visible);
+    w.object(h(v, "peer"));
+  },
+  "communityPeerRequest": function(w, v) {
+    w.uint(2078997125);
+    var flags = 0;
+    if (v.visible === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.int53(h(v, "requestedBy"));
+    w.int(h(v, "date"));
+  },
+  "communities.peerLinkRequests": function(w, v) {
+    w.uint(574926765);
+    var flags = 0;
+    var _nextOffset = v.nextOffset !== void 0;
+    if (_nextOffset) flags |= 1;
+    w.uint(flags);
+    w.int(h(v, "totalCount"));
+    w.vector(w.object, h(v, "requests"));
+    if (_nextOffset) w.string(v.nextOffset);
+    w.vector(w.object, h(v, "chats"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "ephemeralMessage": function(w, v) {
+    w.uint(3653688346);
+    var flags = 0;
+    if (v.out === true) flags |= 1;
+    var _topMsgId = v.topMsgId !== void 0;
+    if (_topMsgId) flags |= 2;
+    var _entities = v.entities && v.entities.length;
+    if (_entities) flags |= 4;
+    var _media = v.media !== void 0;
+    if (_media) flags |= 8;
+    var _replyMarkup = v.replyMarkup !== void 0;
+    if (_replyMarkup) flags |= 16;
+    var _replyTo = v.replyTo !== void 0;
+    if (_replyTo) flags |= 64;
+    w.uint(flags);
+    w.int(h(v, "id"));
+    w.object(h(v, "fromId"));
+    w.object(h(v, "peerId"));
+    w.int53(h(v, "receiverId"));
+    if (_topMsgId) w.int(v.topMsgId);
+    w.int(h(v, "date"));
+    w.string(h(v, "message"));
+    if (_entities) w.vector(w.object, v.entities);
+    if (_media) w.object(v.media);
+    if (_replyMarkup) w.object(v.replyMarkup);
+    if (_replyTo) w.object(v.replyTo);
+  },
+  "communities.participantJoinedChats": function(w, v) {
+    w.uint(2373472554);
+    w.vector(w.int53, h(v, "creatorChatIds"));
+    w.vector(w.int53, h(v, "joinedChatIds"));
+    w.vector(w.object, h(v, "chats"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "messages.translatedRichMessage": function(w, v) {
+    w.uint(1107532175);
+    w.vector(w.object, h(v, "result"));
+  },
+  "messages.composedRichMessageWithAI": function(w, v) {
+    w.uint(1279604680);
+    w.object(h(v, "result"));
   },
   "invokeAfterMsg": function(w, v) {
     w.uint(3416209197);
@@ -58557,6 +59964,34 @@ var m = {
     w.uint(4122302015);
     w.string(h(v, "id"));
   },
+  "account.confirmBotConnection": function(w, v) {
+    w.uint(1743593320);
+    w.object(h(v, "botId"));
+  },
+  "account.getWebBrowserSettings": function(w, v) {
+    w.uint(1449482088);
+    w.long(h(v, "hash"));
+  },
+  "account.updateWebBrowserSettings": function(w, v) {
+    w.uint(2598339326);
+    var flags = 0;
+    if (v.openExternalBrowser === true) flags |= 1;
+    if (v.displayCloseButton === true) flags |= 2;
+    w.uint(flags);
+  },
+  "account.toggleWebBrowserSettingsException": function(w, v) {
+    w.uint(1626161705);
+    var flags = 0;
+    var _openExternalBrowser = v.openExternalBrowser !== void 0;
+    if (_openExternalBrowser) flags |= 1;
+    if (v.delete === true) flags |= 2;
+    w.uint(flags);
+    if (_openExternalBrowser) w.boolean(v.openExternalBrowser);
+    w.string(h(v, "url"));
+  },
+  "account.deleteWebBrowserSettingsExceptions": function(w) {
+    w.uint(2258663005);
+  },
   "users.getUsers": function(w, v) {
     w.uint(227648840);
     w.vector(w.object, h(v, "id"));
@@ -58637,7 +60072,11 @@ var m = {
     w.int(h(v, "limit"));
   },
   "contacts.search": function(w, v) {
-    w.uint(301470424);
+    w.uint(99978511);
+    var flags = 0;
+    if (v.broadcasts === true) flags |= 1;
+    if (v.bots === true) flags |= 2;
+    w.uint(flags);
     w.string(h(v, "q"));
     w.int(h(v, "limit"));
   },
@@ -58662,6 +60101,7 @@ var m = {
     if (v.groups === true) flags |= 1024;
     if (v.channels === true) flags |= 32768;
     if (v.botsApp === true) flags |= 65536;
+    if (v.botsGuestchat === true) flags |= 131072;
     w.uint(flags);
     w.int(h(v, "offset"));
     w.int(h(v, "limit"));
@@ -58852,7 +60292,7 @@ var m = {
     w.object(h(v, "action"));
   },
   "messages.sendMessage": function(w, v) {
-    w.uint(1415369050);
+    w.uint(4277440354);
     var flags = 0;
     var _replyTo = v.replyTo !== void 0;
     if (_replyTo) flags |= 1;
@@ -58880,6 +60320,8 @@ var m = {
     if (_allowPaidStars) flags |= 2097152;
     var _suggestedPost = v.suggestedPost !== void 0;
     if (_suggestedPost) flags |= 4194304;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 8388608;
     var _scheduleRepeatPeriod = v.scheduleRepeatPeriod !== void 0;
     if (_scheduleRepeatPeriod) flags |= 16777216;
     w.uint(flags);
@@ -58896,6 +60338,7 @@ var m = {
     if (_effect) w.long(v.effect);
     if (_allowPaidStars) w.long(v.allowPaidStars);
     if (_suggestedPost) w.object(v.suggestedPost);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messages.sendMedia": function(w, v) {
     w.uint(53536639);
@@ -59160,7 +60603,7 @@ var m = {
     w.string(h(v, "hash"));
   },
   "messages.importChatInvite": function(w, v) {
-    w.uint(1817183516);
+    w.uint(3734061934);
     w.string(h(v, "hash"));
   },
   "messages.getStickerSet": function(w, v) {
@@ -59201,15 +60644,18 @@ var m = {
     w.int53(h(v, "chatId"));
   },
   "messages.searchGlobal": function(w, v) {
-    w.uint(1271290010);
+    w.uint(1629922364);
     var flags = 0;
     var _folderId = v.folderId !== void 0;
     if (_folderId) flags |= 1;
     if (v.broadcastsOnly === true) flags |= 2;
     if (v.groupsOnly === true) flags |= 4;
     if (v.usersOnly === true) flags |= 8;
+    var _community = v.community !== void 0;
+    if (_community) flags |= 16;
     w.uint(flags);
     if (_folderId) w.int(v.folderId);
+    if (_community) w.object(v.community);
     w.string(h(v, "q"));
     w.object(h(v, "filter"));
     w.int(h(v, "minDate"));
@@ -59307,7 +60753,7 @@ var m = {
     w.int(h(v, "id"));
   },
   "messages.editMessage": function(w, v) {
-    w.uint(1374175969);
+    w.uint(2970019436);
     var flags = 0;
     if (v.noWebpage === true) flags |= 2;
     var _replyMarkup = v.replyMarkup !== void 0;
@@ -59325,6 +60771,8 @@ var m = {
     if (_quickReplyShortcutId) flags |= 131072;
     var _scheduleRepeatPeriod = v.scheduleRepeatPeriod !== void 0;
     if (_scheduleRepeatPeriod) flags |= 262144;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 8388608;
     w.uint(flags);
     w.object(h(v, "peer"));
     w.int(h(v, "id"));
@@ -59335,9 +60783,10 @@ var m = {
     if (_scheduleDate) w.int(v.scheduleDate);
     if (_scheduleRepeatPeriod) w.int(v.scheduleRepeatPeriod);
     if (_quickReplyShortcutId) w.int(v.quickReplyShortcutId);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messages.editInlineBotMessage": function(w, v) {
-    w.uint(2203418042);
+    w.uint(2753805137);
     var flags = 0;
     if (v.noWebpage === true) flags |= 2;
     var _replyMarkup = v.replyMarkup !== void 0;
@@ -59349,12 +60798,15 @@ var m = {
     var _media = v.media !== void 0;
     if (_media) flags |= 16384;
     if (v.invertMedia === true) flags |= 65536;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 8388608;
     w.uint(flags);
     w.object(h(v, "id"));
     if (_message) w.string(v.message);
     if (_media) w.object(v.media);
     if (_replyMarkup) w.object(v.replyMarkup);
     if (_entities) w.vector(w.object, v.entities);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messages.getBotCallbackAnswer": function(w, v) {
     w.uint(2470627847);
@@ -59389,7 +60841,7 @@ var m = {
     w.vector(w.object, h(v, "peers"));
   },
   "messages.saveDraft": function(w, v) {
-    w.uint(1420701838);
+    w.uint(2903482716);
     var flags = 0;
     if (v.noWebpage === true) flags |= 2;
     var _entities = v.entities && v.entities.length;
@@ -59403,6 +60855,8 @@ var m = {
     if (_effect) flags |= 128;
     var _suggestedPost = v.suggestedPost !== void 0;
     if (_suggestedPost) flags |= 256;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 512;
     w.uint(flags);
     if (_replyTo) w.object(v.replyTo);
     w.object(h(v, "peer"));
@@ -59411,6 +60865,7 @@ var m = {
     if (_media) w.object(v.media);
     if (_effect) w.long(v.effect);
     if (_suggestedPost) w.object(v.suggestedPost);
+    if (_richMessage) w.object(v.richMessage);
   },
   "messages.getAllDrafts": function(w) {
     w.uint(1782549861);
@@ -60816,6 +62271,138 @@ var m = {
     w.string(h(v, "url"));
     w.string(h(v, "matchCode"));
   },
+  "messages.composeMessageWithAI": function(w, v) {
+    w.uint(3672950153);
+    var flags = 0;
+    if (v.proofread === true) flags |= 1;
+    var _translateToLang = v.translateToLang !== void 0;
+    if (_translateToLang) flags |= 2;
+    var _tone = v.tone !== void 0;
+    if (_tone) flags |= 4;
+    if (v.emojify === true) flags |= 8;
+    w.uint(flags);
+    w.object(h(v, "text"));
+    if (_translateToLang) w.string(v.translateToLang);
+    if (_tone) w.object(v.tone);
+  },
+  "messages.reportReadMetrics": function(w, v) {
+    w.uint(1080542694);
+    w.object(h(v, "peer"));
+    w.vector(w.object, h(v, "metrics"));
+  },
+  "messages.reportMusicListen": function(w, v) {
+    w.uint(3720140825);
+    w.object(h(v, "id"));
+    w.int(h(v, "listenedDuration"));
+  },
+  "messages.addPollAnswer": function(w, v) {
+    w.uint(431770477);
+    w.object(h(v, "peer"));
+    w.int(h(v, "msgId"));
+    w.object(h(v, "answer"));
+  },
+  "messages.deletePollAnswer": function(w, v) {
+    w.uint(2894398885);
+    w.object(h(v, "peer"));
+    w.int(h(v, "msgId"));
+    w.bytes(h(v, "option"));
+  },
+  "messages.getUnreadPollVotes": function(w, v) {
+    w.uint(1126722802);
+    var flags = 0;
+    var _topMsgId = v.topMsgId !== void 0;
+    if (_topMsgId) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    if (_topMsgId) w.int(v.topMsgId);
+    w.int(h(v, "offsetId"));
+    w.int(h(v, "addOffset"));
+    w.int(h(v, "limit"));
+    w.int(h(v, "maxId"));
+    w.int(h(v, "minId"));
+  },
+  "messages.readPollVotes": function(w, v) {
+    w.uint(388019416);
+    var flags = 0;
+    var _topMsgId = v.topMsgId !== void 0;
+    if (_topMsgId) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    if (_topMsgId) w.int(v.topMsgId);
+  },
+  "messages.setBotGuestChatResult": function(w, v) {
+    w.uint(3102803683);
+    w.long(h(v, "queryId"));
+    w.object(h(v, "result"));
+  },
+  "messages.deleteParticipantReactions": function(w, v) {
+    w.uint(2696416504);
+    w.object(h(v, "peer"));
+    w.object(h(v, "participant"));
+  },
+  "messages.deleteParticipantReaction": function(w, v) {
+    w.uint(3820484652);
+    w.object(h(v, "peer"));
+    w.int(h(v, "msgId"));
+    w.object(h(v, "participant"));
+  },
+  "messages.getPersonalChannelHistory": function(w, v) {
+    w.uint(1442515350);
+    w.object(h(v, "userId"));
+    w.int(h(v, "limit"));
+    w.int(h(v, "maxId"));
+    w.int(h(v, "minId"));
+    w.long(h(v, "hash"));
+  },
+  "messages.getRichMessage": function(w, v) {
+    w.uint(1343580623);
+    w.object(h(v, "peer"));
+    w.int(h(v, "id"));
+  },
+  "messages.translateRichMessage": function(w, v) {
+    w.uint(441720836);
+    var flags = 0;
+    var _peer = v.peer !== void 0;
+    var _id = v.id && v.id.length;
+    var _flags_0 = _peer || _id;
+    if (_flags_0) flags |= 1;
+    var _text = v.text && v.text.length;
+    if (_text) flags |= 2;
+    var _tone = v.tone !== void 0;
+    if (_tone) flags |= 4;
+    w.uint(flags);
+    if (_flags_0) w.object(v.peer);
+    if (_flags_0) w.vector(w.int, v.id);
+    if (_text) w.vector(w.object, v.text);
+    w.string(h(v, "toLang"));
+    if (_tone) w.string(v.tone);
+  },
+  "messages.composeRichMessageWithAI": function(w, v) {
+    w.uint(2373641903);
+    var flags = 0;
+    if (v.proofread === true) flags |= 1;
+    var _translateToLang = v.translateToLang !== void 0;
+    if (_translateToLang) flags |= 2;
+    var _tone = v.tone !== void 0;
+    if (_tone) flags |= 4;
+    if (v.emojify === true) flags |= 8;
+    var _text = v.text !== void 0;
+    if (_text) flags |= 16;
+    w.uint(flags);
+    if (_text) w.object(v.text);
+    if (_translateToLang) w.string(v.translateToLang);
+    if (_tone) w.object(v.tone);
+  },
+  "messages.requestChatJoinWebView": function(w, v) {
+    w.uint(3130975865);
+    var flags = 0;
+    var _themeParams = v.themeParams !== void 0;
+    if (_themeParams) flags |= 1;
+    w.uint(flags);
+    w.long(h(v, "queryId"));
+    if (_themeParams) w.object(v.themeParams);
+    w.string(h(v, "platform"));
+  },
   "updates.getState": function(w) {
     w.uint(3990128682);
   },
@@ -61148,7 +62735,7 @@ var m = {
     w.string(h(v, "username"));
   },
   "channels.joinChannel": function(w, v) {
-    w.uint(615851205);
+    w.uint(2137660962);
     w.object(h(v, "channel"));
   },
   "channels.leaveChannel": function(w, v) {
@@ -61187,6 +62774,7 @@ var m = {
     if (v.byLocation === true) flags |= 1;
     if (v.checkLimit === true) flags |= 2;
     if (v.forPersonal === true) flags |= 4;
+    if (v.forCommunityPeer === true) flags |= 8;
     w.uint(flags);
   },
   "channels.editBanned": function(w, v) {
@@ -61283,9 +62871,15 @@ var m = {
     w.boolean(h(v, "enabled"));
   },
   "channels.toggleJoinRequest": function(w, v) {
-    w.uint(1277789622);
+    w.uint(248260120);
+    var flags = 0;
+    var _guardBot = v.guardBot !== void 0;
+    if (_guardBot) flags |= 1;
+    if (v.applyToInvites === true) flags |= 2;
+    w.uint(flags);
     w.object(h(v, "channel"));
     w.boolean(h(v, "enabled"));
+    if (_guardBot) w.object(v.guardBot);
   },
   "channels.reorderUsernames": function(w, v) {
     w.uint(3025988893);
@@ -61597,6 +63191,53 @@ var m = {
   "bots.getBotRecommendations": function(w, v) {
     w.uint(2713126933);
     w.object(h(v, "bot"));
+  },
+  "bots.checkUsername": function(w, v) {
+    w.uint(2280792475);
+    w.string(h(v, "username"));
+  },
+  "bots.createBot": function(w, v) {
+    w.uint(3853614891);
+    var flags = 0;
+    if (v.viaDeeplink === true) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "name"));
+    w.string(h(v, "username"));
+    w.object(h(v, "managerId"));
+  },
+  "bots.exportBotToken": function(w, v) {
+    w.uint(3171785195);
+    w.object(h(v, "bot"));
+    w.boolean(h(v, "revoke"));
+  },
+  "bots.requestWebViewButton": function(w, v) {
+    w.uint(832742238);
+    w.object(h(v, "userId"));
+    w.object(h(v, "button"));
+  },
+  "bots.getRequestedWebViewButton": function(w, v) {
+    w.uint(3206920179);
+    w.object(h(v, "bot"));
+    w.string(h(v, "webappReqId"));
+  },
+  "bots.getAccessSettings": function(w, v) {
+    w.uint(557339555);
+    w.object(h(v, "bot"));
+  },
+  "bots.editAccessSettings": function(w, v) {
+    w.uint(830553304);
+    var flags = 0;
+    if (v.restricted === true) flags |= 1;
+    var _addUsers = v.addUsers && v.addUsers.length;
+    if (_addUsers) flags |= 2;
+    w.uint(flags);
+    w.object(h(v, "bot"));
+    if (_addUsers) w.vector(w.object, v.addUsers);
+  },
+  "bots.setJoinChatResults": function(w, v) {
+    w.uint(3877259280);
+    w.long(h(v, "queryId"));
+    w.object(h(v, "result"));
   },
   "payments.getPaymentForm": function(w, v) {
     w.uint(924093883);
@@ -62532,6 +64173,14 @@ var m = {
     w.string(h(v, "offset"));
     w.int(h(v, "limit"));
   },
+  "stats.getPollStats": function(w, v) {
+    w.uint(3263036008);
+    var flags = 0;
+    if (v.dark === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.int(h(v, "msgId"));
+  },
   "chatlists.exportChatlistInvite": function(w, v) {
     w.uint(2222081934);
     w.object(h(v, "chatlist"));
@@ -62946,171 +64595,189 @@ var m = {
     w.uint(3189671354);
     w.object(h(v, "collectible"));
   },
-  "messages.composeMessageWithAI": function(w, v) {
-    w.uint(4248988414);
+  "aicompose.createTone": function(w, v) {
+    w.uint(1252538643);
     var flags = 0;
-    if (v.proofread === true) flags |= 1;
-    var _translateToLang = v.translateToLang !== void 0;
-    if (_translateToLang) flags |= 2;
-    var _changeTone = v.changeTone !== void 0;
-    if (_changeTone) flags |= 4;
-    if (v.emojify === true) flags |= 8;
+    if (v.displayAuthor === true) flags |= 1;
     w.uint(flags);
-    w.object(h(v, "text"));
-    if (_translateToLang) w.string(v.translateToLang);
-    if (_changeTone) w.string(v.changeTone);
-  },
-  "messages.reportReadMetrics": function(w, v) {
-    w.uint(1080542694);
-    w.object(h(v, "peer"));
-    w.vector(w.object, h(v, "metrics"));
-  },
-  "messages.reportMusicListen": function(w, v) {
-    w.uint(3720140825);
-    w.object(h(v, "id"));
-    w.int(h(v, "listenedDuration"));
-  },
-  "messages.addPollAnswer": function(w, v) {
-    w.uint(431770477);
-    w.object(h(v, "peer"));
-    w.int(h(v, "msgId"));
-    w.object(h(v, "answer"));
-  },
-  "messages.deletePollAnswer": function(w, v) {
-    w.uint(2894398885);
-    w.object(h(v, "peer"));
-    w.int(h(v, "msgId"));
-    w.bytes(h(v, "option"));
-  },
-  "messages.getUnreadPollVotes": function(w, v) {
-    w.uint(1126722802);
-    var flags = 0;
-    var _topMsgId = v.topMsgId !== void 0;
-    if (_topMsgId) flags |= 1;
-    w.uint(flags);
-    w.object(h(v, "peer"));
-    if (_topMsgId) w.int(v.topMsgId);
-    w.int(h(v, "offsetId"));
-    w.int(h(v, "addOffset"));
-    w.int(h(v, "limit"));
-    w.int(h(v, "maxId"));
-    w.int(h(v, "minId"));
-  },
-  "messages.readPollVotes": function(w, v) {
-    w.uint(388019416);
-    var flags = 0;
-    var _topMsgId = v.topMsgId !== void 0;
-    if (_topMsgId) flags |= 1;
-    w.uint(flags);
-    w.object(h(v, "peer"));
-    if (_topMsgId) w.int(v.topMsgId);
-  },
-  "bots.checkUsername": function(w, v) {
-    w.uint(2280792475);
-    w.string(h(v, "username"));
-  },
-  "bots.createBot": function(w, v) {
-    w.uint(3853614891);
-    var flags = 0;
-    if (v.viaDeeplink === true) flags |= 1;
-    w.uint(flags);
-    w.string(h(v, "name"));
-    w.string(h(v, "username"));
-    w.object(h(v, "managerId"));
-  },
-  "bots.exportBotToken": function(w, v) {
-    w.uint(3171785195);
-    w.object(h(v, "bot"));
-    w.boolean(h(v, "revoke"));
-  },
-  "bots.requestWebViewButton": function(w, v) {
-    w.uint(832742238);
-    w.object(h(v, "userId"));
-    w.object(h(v, "button"));
-  },
-  "bots.getRequestedWebViewButton": function(w, v) {
-    w.uint(3206920179);
-    w.object(h(v, "bot"));
-    w.string(h(v, "webappReqId"));
-  },
-  "channels.editCreator": function(w, v) {
-    w.uint(2402864415);
-    w.object(h(v, "channel"));
-    w.object(h(v, "userId"));
-    w.object(h(v, "password"));
-  },
-  "channels.createForumTopic": function(w, v) {
-    w.uint(4094427684);
-    var flags = 0;
-    var _iconColor = v.iconColor !== void 0;
-    if (_iconColor) flags |= 1;
-    var _sendAs = v.sendAs !== void 0;
-    if (_sendAs) flags |= 4;
-    var _iconEmojiId = v.iconEmojiId !== void 0;
-    if (_iconEmojiId) flags |= 8;
-    w.uint(flags);
-    w.object(h(v, "channel"));
+    w.long(h(v, "emojiId"));
     w.string(h(v, "title"));
-    if (_iconColor) w.int(v.iconColor);
-    if (_iconEmojiId) w.long(v.iconEmojiId);
-    w.long(h(v, "randomId"));
-    if (_sendAs) w.object(v.sendAs);
+    w.string(h(v, "prompt"));
   },
-  "channels.getForumTopics": function(w, v) {
-    w.uint(233136337);
+  "aicompose.updateTone": function(w, v) {
+    w.uint(2419838809);
     var flags = 0;
-    var _q = v.q !== void 0;
-    if (_q) flags |= 1;
+    var _displayAuthor = v.displayAuthor !== void 0;
+    if (_displayAuthor) flags |= 1;
+    var _emojiId = v.emojiId !== void 0;
+    if (_emojiId) flags |= 2;
+    var _title = v.title !== void 0;
+    if (_title) flags |= 4;
+    var _prompt = v.prompt !== void 0;
+    if (_prompt) flags |= 8;
     w.uint(flags);
-    w.object(h(v, "channel"));
-    if (_q) w.string(v.q);
-    w.int(h(v, "offsetDate"));
-    w.int(h(v, "offsetId"));
-    w.int(h(v, "offsetTopic"));
+    w.object(h(v, "tone"));
+    if (_displayAuthor) w.boolean(v.displayAuthor);
+    if (_emojiId) w.long(v.emojiId);
+    if (_title) w.string(v.title);
+    if (_prompt) w.string(v.prompt);
+  },
+  "aicompose.saveTone": function(w, v) {
+    w.uint(394447793);
+    w.object(h(v, "tone"));
+    w.boolean(h(v, "unsave"));
+  },
+  "aicompose.deleteTone": function(w, v) {
+    w.uint(3711512938);
+    w.object(h(v, "tone"));
+  },
+  "aicompose.getTone": function(w, v) {
+    w.uint(3001596419);
+    w.object(h(v, "tone"));
+  },
+  "aicompose.getTones": function(w, v) {
+    w.uint(2882900481);
+    w.long(h(v, "hash"));
+  },
+  "aicompose.getToneExample": function(w, v) {
+    w.uint(3518278420);
+    w.object(h(v, "tone"));
+    w.int(h(v, "num"));
+  },
+  "communities.create": function(w, v) {
+    w.uint(2788710892);
+    var flags = 0;
+    var _about = v.about !== void 0;
+    if (_about) flags |= 1;
+    if (v.hidden === true) flags |= 2;
+    w.uint(flags);
+    w.string(h(v, "title"));
+    if (_about) w.string(v.about);
+    w.object(h(v, "peer"));
+  },
+  "communities.togglePeerLink": function(w, v) {
+    w.uint(1936576490);
+    var flags = 0;
+    if (v.visible === true) flags |= 1;
+    if (v.hidden === true) flags |= 2;
+    if (v.deleted === true) flags |= 4;
+    w.uint(flags);
+    w.object(h(v, "community"));
+    w.object(h(v, "peer"));
+  },
+  "communities.getJoinedCommunities": function(w) {
+    w.uint(2791565360);
+  },
+  "communities.toggleCommunityCollapsedInDialogs": function(w, v) {
+    w.uint(3613844458);
+    var flags = 0;
+    if (v.collapsed === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "community"));
+  },
+  "communities.getPeerLinkRequests": function(w, v) {
+    w.uint(2474062660);
+    w.object(h(v, "community"));
+    w.string(h(v, "offset"));
     w.int(h(v, "limit"));
   },
-  "channels.getForumTopicsByID": function(w, v) {
-    w.uint(2961383097);
-    w.object(h(v, "channel"));
-    w.vector(w.int, h(v, "topics"));
-  },
-  "channels.editForumTopic": function(w, v) {
-    w.uint(4108296581);
+  "communities.togglePeerLinkRequestApproval": function(w, v) {
+    w.uint(2357336488);
     var flags = 0;
-    var _title = v.title !== void 0;
-    if (_title) flags |= 1;
-    var _iconEmojiId = v.iconEmojiId !== void 0;
-    if (_iconEmojiId) flags |= 2;
-    var _closed = v.closed !== void 0;
-    if (_closed) flags |= 4;
-    var _hidden = v.hidden !== void 0;
-    if (_hidden) flags |= 8;
+    if (v.reject === true) flags |= 1;
     w.uint(flags);
-    w.object(h(v, "channel"));
-    w.int(h(v, "topicId"));
-    if (_title) w.string(v.title);
-    if (_iconEmojiId) w.long(v.iconEmojiId);
-    if (_closed) w.boolean(v.closed);
-    if (_hidden) w.boolean(v.hidden);
+    w.object(h(v, "community"));
+    w.object(h(v, "peer"));
   },
-  "channels.updatePinnedForumTopic": function(w, v) {
-    w.uint(1814925350);
-    w.object(h(v, "channel"));
-    w.int(h(v, "topicId"));
-    w.boolean(h(v, "pinned"));
-  },
-  "channels.deleteTopicHistory": function(w, v) {
-    w.uint(876830509);
-    w.object(h(v, "channel"));
-    w.int(h(v, "topMsgId"));
-  },
-  "channels.reorderPinnedForumTopics": function(w, v) {
-    w.uint(693150095);
+  "communities.toggleAllPeerLinkRequestApproval": function(w, v) {
+    w.uint(3219381565);
     var flags = 0;
-    if (v.force === true) flags |= 1;
+    if (v.reject === true) flags |= 1;
     w.uint(flags);
-    w.object(h(v, "channel"));
-    w.vector(w.int, h(v, "order"));
+    w.object(h(v, "community"));
+  },
+  "communities.toggleParticipantBanned": function(w, v) {
+    w.uint(2573708559);
+    var flags = 0;
+    if (v.unban === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "community"));
+    w.object(h(v, "participant"));
+  },
+  "communities.getParticipantJoinedChats": function(w, v) {
+    w.uint(4169051051);
+    w.object(h(v, "community"));
+    w.object(h(v, "participant"));
+  },
+  "ephemeral.sendMessage": function(w, v) {
+    w.uint(1758187679);
+    var flags = 0;
+    var _queryId = v.queryId !== void 0;
+    if (_queryId) flags |= 1;
+    var _entities = v.entities && v.entities.length;
+    if (_entities) flags |= 2;
+    var _media = v.media !== void 0;
+    if (_media) flags |= 4;
+    var _replyMarkup = v.replyMarkup !== void 0;
+    if (_replyMarkup) flags |= 8;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 16;
+    var _replyTo = v.replyTo !== void 0;
+    if (_replyTo) flags |= 32;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.object(h(v, "receiverId"));
+    if (_queryId) w.long(v.queryId);
+    w.string(h(v, "message"));
+    if (_entities) w.vector(w.object, v.entities);
+    if (_media) w.object(v.media);
+    if (_replyMarkup) w.object(v.replyMarkup);
+    if (_richMessage) w.object(v.richMessage);
+    w.long(h(v, "randomId"));
+    if (_replyTo) w.object(v.replyTo);
+  },
+  "ephemeral.deleteMessage": function(w, v) {
+    w.uint(2747323665);
+    w.object(h(v, "peer"));
+    w.object(h(v, "receiverId"));
+    w.int(h(v, "id"));
+  },
+  "ephemeral.reportMessage": function(w, v) {
+    w.uint(2265248447);
+    w.object(h(v, "peer"));
+    w.int(h(v, "id"));
+    w.bytes(h(v, "option"));
+    w.string(h(v, "message"));
+  },
+  "ephemeral.getCallbackAnswer": function(w, v) {
+    w.uint(1067738312);
+    var flags = 0;
+    var _data = v.data !== void 0;
+    if (_data) flags |= 2;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.int(h(v, "id"));
+    if (_data) w.bytes(v.data);
+  },
+  "ephemeral.editMessage": function(w, v) {
+    w.uint(334647534);
+    var flags = 0;
+    var _message = v.message !== void 0;
+    if (_message) flags |= 1;
+    var _entities = v.entities && v.entities.length;
+    if (_entities) flags |= 2;
+    var _replyMarkup = v.replyMarkup !== void 0;
+    if (_replyMarkup) flags |= 4;
+    var _media = v.media !== void 0;
+    if (_media) flags |= 8;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.object(h(v, "receiverId"));
+    w.int(h(v, "id"));
+    if (_message) w.string(v.message);
+    if (_media) w.object(v.media);
+    if (_entities) w.vector(w.object, v.entities);
+    if (_replyMarkup) w.object(v.replyMarkup);
   },
   "mtcute.customMethod": function(w, v) {
     w.raw(h(v, "bytes"));
@@ -63414,6 +65081,7 @@ var m = {
     "messageActionChangeCreator": 12,
     "messageActionNoForwardsToggle": 12,
     "messageActionNoForwardsRequest": 16,
+    "messageActionManagedBotCreated": 12,
     "photoEmpty": 12,
     "geoPointEmpty": 4,
     "inputNotifyUsers": 4,
@@ -63452,6 +65120,7 @@ var m = {
     "inputMessagesFilterGeo": 4,
     "inputMessagesFilterContacts": 4,
     "inputMessagesFilterPinned": 4,
+    "inputMessagesFilterPoll": 4,
     "updateMessageID": 16,
     "updateEncryptedChatTyping": 8,
     "updateEncryptedMessagesRead": 16,
@@ -63498,6 +65167,9 @@ var m = {
     "updateMonoForumNoPaidException": 28,
     "updatePinnedForumTopic": 24,
     "updateStarGiftCraftFail": 4,
+    "updateManagedBot": 24,
+    "updateAiComposeTones": 4,
+    "updateWebBrowserSettings": 8,
     "updates.state": 24,
     "updates.differenceEmpty": 12,
     "updates.differenceTooLong": 8,
@@ -63520,6 +65192,7 @@ var m = {
     "notifyChats": 4,
     "notifyBroadcasts": 4,
     "notifyForumTopic": 20,
+    "notifyCommunity": 12,
     "sendMessageTypingAction": 4,
     "sendMessageCancelAction": 4,
     "sendMessageRecordVideoAction": 4,
@@ -63620,6 +65293,8 @@ var m = {
     "messageEntityCustomEmoji": 20,
     "messageEntityBlockquote": 16,
     "messageEntityFormattedDate": 20,
+    "messageEntityDiffInsert": 12,
+    "messageEntityDiffDelete": 12,
     "inputChannelEmpty": 4,
     "inputChannel": 20,
     "messageRange": 12,
@@ -63652,6 +65327,7 @@ var m = {
     "topPeerCategoryForwardUsers": 4,
     "topPeerCategoryForwardChats": 4,
     "topPeerCategoryBotsApp": 4,
+    "topPeerCategoryBotsGuestChat": 4,
     "contacts.topPeersNotModified": 4,
     "contacts.topPeersDisabled": 4,
     "messages.featuredStickersNotModified": 8,
@@ -63694,6 +65370,7 @@ var m = {
     "inputDialogPeerFolder": 8,
     "dialogPeer": 16,
     "dialogPeerFolder": 8,
+    "dialogPeerCommunity": 12,
     "messages.foundStickerSetsNotModified": 4,
     "help.termsOfServiceUpdateEmpty": 8,
     "inputSecureFile": 20,
@@ -63743,6 +65420,7 @@ var m = {
     "baseThemeNight": 4,
     "baseThemeTinted": 4,
     "baseThemeArctic": 4,
+    "webPageAttributeAiComposeTone": 12,
     "dialogFilterDefault": 4,
     "statsDateRangeDays": 12,
     "statsAbsValueAndPrev": 20,
@@ -63815,6 +65493,7 @@ var m = {
     "messagePeerVoteInputOption": 20,
     "storyItemDeleted": 8,
     "storyItemSkipped": 20,
+    "inputReplyToEphemeralMessage": 8,
     "prepaidGiveaway": 24,
     "prepaidStarsGiveaway": 32,
     "postInteractionCountersMessage": 20,
@@ -63895,13 +65574,14 @@ var m = {
     "starGiftAttributeRarityRare": 4,
     "starGiftAttributeRarityEpic": 4,
     "starGiftAttributeRarityLegendary": 4,
-    "messageActionManagedBotCreated": 12,
-    "inputMessagesFilterPoll": 4,
-    "updateManagedBot": 24,
-    "messageEntityDiffInsert": 12,
-    "messageEntityDiffDelete": 12,
     "inputMessageReadMetric": 32,
-    "updateChannelPinnedTopic": 20,
+    "inputAiComposeToneID": 20,
+    "aicompose.tonesNotModified": 4,
+    "joinChatBotResultApproved": 4,
+    "joinChatBotResultDeclined": 4,
+    "joinChatBotResultQueued": 4,
+    "account.webBrowserSettingsNotModified": 4,
+    "communityPeerRequest": 32,
     "auth.logOut": 4,
     "auth.resetAuthorizations": 4,
     "auth.exportAuthorization": 8,
@@ -63955,6 +65635,9 @@ var m = {
     "account.getSavedMusicIds": 12,
     "account.initPasskeyRegistration": 4,
     "account.getPasskeys": 4,
+    "account.getWebBrowserSettings": 12,
+    "account.updateWebBrowserSettings": 8,
+    "account.deleteWebBrowserSettingsExceptions": 4,
     "contacts.getContactIDs": 12,
     "contacts.getStatuses": 4,
     "contacts.getContacts": 12,
@@ -64064,6 +65747,8 @@ var m = {
     "smsjobs.leave": 4,
     "smsjobs.updateSettings": 8,
     "smsjobs.getStatus": 4,
+    "aicompose.getTones": 12,
+    "communities.getJoinedCommunities": 4,
     "mt_dh_gen_ok": 52,
     "mt_dh_gen_retry": 52,
     "mt_dh_gen_fail": 52,
@@ -64172,7 +65857,7 @@ function _isAny$1() {
     return false;
   };
 }
-const LAYER = 224;
+const LAYER = 228;
 class RpcError extends Error {
   constructor(code, text) {
     super("Telegram API error " + code + ": " + text);
@@ -64204,30 +65889,69 @@ RpcError.fromTl = function(obj) {
   } else if ((match = err.text.match(/^STATS_MIGRATE_(\d+)$/)) != null) {
     err.text = "STATS_MIGRATE_%d";
     err.dc = parseInt(match[1]);
+  } else if ((match = err.text.match(/^USER_MIGRATE_(\d+)$/)) != null) {
+    err.text = "USER_MIGRATE_%d";
+    err.newDc = parseInt(match[1]);
   } else if ((match = err.text.match(/^EMAIL_UNCONFIRMED_(\d+)$/)) != null) {
     err.text = "EMAIL_UNCONFIRMED_%d";
     err.codeLength = parseInt(match[1]);
+  } else if ((match = err.text.match(/^FILE_REFERENCE_(\d+)_EMPTY$/)) != null) {
+    err.text = "FILE_REFERENCE_%d_EMPTY";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^FILE_REFERENCE_(\d+)_EXPIRED$/)) != null) {
+    err.text = "FILE_REFERENCE_%d_EXPIRED";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^FILE_REFERENCE_(\d+)_INVALID$/)) != null) {
+    err.text = "FILE_REFERENCE_%d_INVALID";
+    err.duration = parseInt(match[1]);
   } else if ((match = err.text.match(/^PASSWORD_TOO_FRESH_(\d+)$/)) != null) {
     err.text = "PASSWORD_TOO_FRESH_%d";
     err.seconds = parseInt(match[1]);
   } else if ((match = err.text.match(/^SESSION_TOO_FRESH_(\d+)$/)) != null) {
     err.text = "SESSION_TOO_FRESH_%d";
     err.seconds = parseInt(match[1]);
+  } else if ((match = err.text.match(/^STARGIFT_RESELL_TOO_EARLY_(\d+)$/)) != null) {
+    err.text = "STARGIFT_RESELL_TOO_EARLY_%d";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^STARGIFT_TRANSFER_TOO_EARLY_(\d+)$/)) != null) {
+    err.text = "STARGIFT_TRANSFER_TOO_EARLY_%d";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^STORY_LIVE_ALREADY_(\d+)$/)) != null) {
+    err.text = "STORY_LIVE_ALREADY_%d";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^STORY_SEND_FLOOD_MONTHLY_(\d+)$/)) != null) {
+    err.text = "STORY_SEND_FLOOD_MONTHLY_%d";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^STORY_SEND_FLOOD_WEEKLY_(\d+)$/)) != null) {
+    err.text = "STORY_SEND_FLOOD_WEEKLY_%d";
+    err.duration = parseInt(match[1]);
+  } else if ((match = err.text.match(/^FILE_PART_(\d+)_MISSING$/)) != null) {
+    err.text = "FILE_PART_%d_MISSING";
+    err.which = parseInt(match[1]);
+  } else if ((match = err.text.match(/^ALLOW_PAYMENT_REQUIRED_(\d+)$/)) != null) {
+    err.text = "ALLOW_PAYMENT_REQUIRED_%d";
+    err.duration = parseInt(match[1]);
   } else if ((match = err.text.match(/^PREVIOUS_CHAT_IMPORT_ACTIVE_WAIT_(\d+)MIN$/)) != null) {
     err.text = "PREVIOUS_CHAT_IMPORT_ACTIVE_WAIT_%dMIN";
     err.minutes = parseInt(match[1]);
   } else if ((match = err.text.match(/^2FA_CONFIRM_WAIT_(\d+)$/)) != null) {
     err.text = "2FA_CONFIRM_WAIT_%d";
     err.seconds = parseInt(match[1]);
+  } else if ((match = err.text.match(/^FLOOD_PREMIUM_WAIT_(\d+)$/)) != null) {
+    err.text = "FLOOD_PREMIUM_WAIT_%d";
+    err.seconds = parseInt(match[1]);
+  } else if ((match = err.text.match(/^PREMIUM_SUB_ACTIVE_UNTIL_(\d+)$/)) != null) {
+    err.text = "PREMIUM_SUB_ACTIVE_UNTIL_%d";
+    err.duration = parseInt(match[1]);
   } else if ((match = err.text.match(/^SLOWMODE_WAIT_(\d+)$/)) != null) {
     err.text = "SLOWMODE_WAIT_%d";
     err.seconds = parseInt(match[1]);
   } else if ((match = err.text.match(/^TAKEOUT_INIT_DELAY_(\d+)$/)) != null) {
     err.text = "TAKEOUT_INIT_DELAY_%d";
     err.seconds = parseInt(match[1]);
-  } else if ((match = err.text.match(/^FILE_PART_(\d+)_MISSING$/)) != null) {
-    err.text = "FILE_PART_%d_MISSING";
-    err.which = parseInt(match[1]);
+  } else if ((match = err.text.match(/^AUTH_RESTART_(\d+)$/)) != null) {
+    err.text = "AUTH_RESTART_%d";
+    err.duration = parseInt(match[1]);
   } else if ((match = err.text.match(/^FLOOD_TEST_PHONE_WAIT_(\d+)$/)) != null) {
     err.text = "FLOOD_TEST_PHONE_WAIT_%d";
     err.seconds = parseInt(match[1]);
@@ -64237,9 +65961,6 @@ RpcError.fromTl = function(obj) {
   } else if ((match = err.text.match(/^INTERDC_(\d+)_CALL_RICH_ERROR$/)) != null) {
     err.text = "INTERDC_%d_CALL_RICH_ERROR";
     err.dc = parseInt(match[1]);
-  } else if ((match = err.text.match(/^USER_MIGRATE_(\d+)$/)) != null) {
-    err.text = "USER_MIGRATE_%d";
-    err.newDc = parseInt(match[1]);
   }
   return err;
 };
@@ -64844,6 +66565,7 @@ let PersistentConnection$1 = class PersistentConnection {
   #lastAddress;
   #connection;
   #connecting = false;
+  #connectAbort;
   #strategy;
   #onError;
   // boolean represents whether the timer is clean
@@ -64876,17 +66598,23 @@ let PersistentConnection$1 = class PersistentConnection {
     while (true) {
       try {
         this.#connecting = true;
-        this.#connection = await this.#connect(this.#lastAddress);
+        const connectAbort = new AbortController();
+        this.#connectAbort = connectAbort;
+        const connection = await this.#connect(this.#lastAddress, connectAbort.signal);
+        this.#connectAbort = void 0;
         if (this.#closed) {
+          connection.close();
           this.#closed.resolve();
           break;
         }
+        this.#connection = connection;
         this.#resetState();
         await this.params.onOpen?.(this.#connection);
         this.#connection.close();
         this.#connection = void 0;
         break;
       } catch (err) {
+        this.#connectAbort = void 0;
         const oldConnection = this.#connection;
         this.#connection = void 0;
         await this.params.onClose?.();
@@ -64925,6 +66653,7 @@ let PersistentConnection$1 = class PersistentConnection {
     }
     this.#lastAddress = void 0;
     this.#resetState();
+    this.#closed?.resolve();
   }
   connect(address) {
     if (this.#lastAddress !== void 0 && this.#lastAddress !== address) {
@@ -64952,7 +66681,9 @@ let PersistentConnection$1 = class PersistentConnection {
       this.#sleep.resolve(false);
     } else if (this.#connection) {
       this.#connection.close();
-    } else if (this.#connecting) ;
+    } else if (this.#connecting) {
+      this.#connectAbort?.abort();
+    }
     return this.#closed.promise;
   }
   async changeTransport(connect) {
@@ -64983,18 +66714,7 @@ function prettify(address, options) {
 
 function combineAbortSignals(signal1, signal2) {
   if (!signal2) return signal1;
-  if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([signal1, signal2]);
-  }
-  const controller = new AbortController();
-  function abort() {
-    controller.abort(this.reason);
-    signal1.removeEventListener("abort", abort);
-    signal2.removeEventListener("abort", abort);
-  }
-  signal1.addEventListener("abort", abort);
-  signal2.addEventListener("abort", abort);
-  return controller.signal;
+  return AbortSignal.any([signal1, signal2]);
 }
 
 const SILENTLY_SLEEP_METHODS = /* @__PURE__ */ new Set([
@@ -65024,7 +66744,7 @@ function floodWaiter(options) {
       if (delta <= minStoredWait) {
         storage.delete(method);
       } else if (delta <= floodSleepThreshold) {
-        await sleepWithAbort(delta, combineAbortSignals(ctx.manager.params.stopSignal, ctx.params?.abortSignal));
+        await sleepWithAbort(delta, combineAbortSignals(ctx.manager.teardownSignal, ctx.params?.abortSignal));
         storage.delete(method);
       } else {
         return {
@@ -65063,7 +66783,7 @@ function floodWaiter(options) {
           }
           await sleepWithAbort(
             ms,
-            combineAbortSignals(ctx.manager.params.stopSignal, ctx.params?.abortSignal)
+            combineAbortSignals(ctx.manager.teardownSignal, ctx.params?.abortSignal)
           );
           continue;
         }
@@ -65114,7 +66834,7 @@ function internalErrorsHandler(params) {
         if (waitSeconds > 0) {
           await sleepWithAbort(
             waitSeconds * 1e3,
-            combineAbortSignals(ctx.manager.params.stopSignal, ctx.params?.abortSignal)
+            combineAbortSignals(ctx.manager.teardownSignal, ctx.params?.abortSignal)
           );
         }
         continue;
@@ -65125,8 +66845,120 @@ function internalErrorsHandler(params) {
   };
 }
 
+class ResourceLimiter {
+  constructor(max) {
+    this.max = max;
+    this._available = max;
+  }
+  _available;
+  _waiters = [];
+  setMax(max) {
+    this._available += max - this.max;
+    this.max = max;
+    this._pump();
+  }
+  tryAcquire(bytes) {
+    if (bytes > this.max) bytes = this.max;
+    if (!this._waiters.length && this._available >= bytes) {
+      this._available -= bytes;
+      return true;
+    }
+    return false;
+  }
+  acquire(bytes, signal) {
+    if (this.tryAcquire(bytes)) return Promise.resolve();
+    if (bytes > this.max) bytes = this.max;
+    const deferred = new Deferred();
+    const waiter = { need: bytes, deferred };
+    this._waiters.push(waiter);
+    if (signal) {
+      const onAbort = () => {
+        const idx = this._waiters.indexOf(waiter);
+        if (idx >= 0) this._waiters.splice(idx, 1);
+        deferred.reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      const removeListener = signal.removeEventListener.bind(signal, "abort", onAbort);
+      deferred.promise.then(removeListener, removeListener);
+    }
+    return deferred.promise;
+  }
+  release(bytes) {
+    if (bytes > this.max) bytes = this.max;
+    this._available += bytes;
+    this._pump();
+  }
+  _pump() {
+    while (this._waiters.length && this._waiters[0].need <= this._available) {
+      const waiter = this._waiters.shift();
+      this._available -= waiter.need;
+      waiter.deferred.resolve();
+    }
+  }
+}
+
+const DOWNLOAD_RESOURCE_LIMIT = 2 * 1024 * 1024;
+const DOWNLOAD_RESOURCE_LIMIT_PREMIUM = 16 * 1024 * 1024;
+const UPLOAD_RESOURCE_LIMIT = 4 * 1024 * 1024;
+function defaultResourceLimit(kind, isPremium) {
+  if (kind === "upload") return UPLOAD_RESOURCE_LIMIT;
+  return isPremium ? DOWNLOAD_RESOURCE_LIMIT_PREMIUM : DOWNLOAD_RESOURCE_LIMIT;
+}
+function mediaThrottle(params) {
+  const { getResourceLimit = defaultResourceLimit } = {};
+  const limiters = /* @__PURE__ */ new Map();
+  const getLimiter = (kind, dcId, isPremium) => {
+    let byDc = limiters.get(kind);
+    if (!byDc) {
+      byDc = /* @__PURE__ */ new Map();
+      limiters.set(kind, byDc);
+    }
+    const max = getResourceLimit(kind, isPremium);
+    let limiter = byDc.get(dcId);
+    if (!limiter) {
+      limiter = new ResourceLimiter(max);
+      byDc.set(dcId, limiter);
+    } else if (limiter.max !== max) {
+      limiter.setMax(max);
+    }
+    return limiter;
+  };
+  return async (ctx, next) => {
+    let kind;
+    let bytes = 0;
+    switch (ctx.request._) {
+      case "upload.getFile":
+      case "upload.getWebFile":
+        kind = ctx.params?.kind ?? "download";
+        bytes = ctx.request.limit;
+        break;
+      case "upload.saveFilePart":
+      case "upload.saveBigFilePart":
+        kind = "upload";
+        bytes = ctx.request.bytes.length;
+        break;
+    }
+    if (kind === void 0) return next(ctx);
+    const dcId = ctx.params?.dcId ?? ctx.manager.getPrimaryDcId();
+    const limiter = getLimiter(kind, dcId, ctx.manager.params.isPremium);
+    if (!limiter.tryAcquire(bytes)) {
+      const abortSignal = combineAbortSignals(ctx.manager.teardownSignal, ctx.params?.abortSignal);
+      await limiter.acquire(bytes, abortSignal);
+    }
+    try {
+      return await next(ctx);
+    } finally {
+      limiter.release(bytes);
+    }
+  };
+}
+
 function basic(options) {
-  return [floodWaiter({}), internalErrorsHandler({})];
+  return [
+    mediaThrottle(),
+    floodWaiter({}),
+    internalErrorsHandler({})
+  ];
 }
 
 function generateKeyAndIvFromNonce(crypto, serverNonce, newNonce) {
@@ -65178,11 +67010,7 @@ class EarlyTimer {
   emitWhenIdle() {
     clearTimeoutWrap(this._timeout);
     this._timeoutTs = performance.now();
-    if (typeof queueMicrotask !== "undefined") {
-      queueMicrotask(this.emitNow);
-    } else {
-      this._timeout = setTimeoutWrap(this.emitNow, 0);
-    }
+    queueMicrotask(this.emitNow);
   }
   /**
    * Emit the timer before the next given milliseconds
@@ -65203,12 +67031,8 @@ class EarlyTimer {
     if (!this._timeoutTs || ts < this._timeoutTs) {
       this.reset();
       const diff = ts - performance.now();
-      if (diff > 0) {
-        this._timeout = setTimeoutWrap(this.emitNow, diff);
-        this._timeoutTs = ts;
-      } else {
-        this._handler();
-      }
+      this._timeout = setTimeoutWrap(this.emitNow, Math.max(diff, 0));
+      this._timeoutTs = ts;
     }
   }
   /**
@@ -65231,6 +67055,50 @@ class EarlyTimer {
   onTimeout(handler) {
     this._handler = handler;
   }
+}
+
+const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
+function getAllGettersNames(obj) {
+  const getters = [];
+  do {
+    Object.getOwnPropertyNames(obj).forEach((prop) => {
+      if (prop !== "__proto__" && Object.getOwnPropertyDescriptor(obj, prop)?.get && !getters.includes(prop)) {
+        getters.push(prop);
+      }
+    });
+  } while (obj = Object.getPrototypeOf(obj));
+  return getters;
+}
+function makeInspectable(obj, props, hide) {
+  const getters = props || [];
+  for (const key of getAllGettersNames(obj.prototype)) {
+    if (!hide || !hide.includes(key)) getters.push(key);
+  }
+  const proto = { [obj.name]: class {
+  } }[obj.name].prototype;
+  obj.prototype.toJSON = function() {
+    const ret = Object.create(proto);
+    getters.forEach((it) => {
+      try {
+        let val = this[it];
+        if (val && typeof val === "object") {
+          if (val instanceof Uint8Array) {
+            val = encode$1(val);
+          } else if (Long.isLong(val)) {
+            val = val.toString();
+          } else if (typeof val.toJSON === "function") {
+            val = val.toJSON(true);
+          }
+        }
+        ret[it] = val;
+      } catch (e) {
+        ret[it] = `Error: ${e.message}`;
+      }
+    });
+    return ret;
+  };
+  obj.prototype[customInspectSymbol] = obj.prototype.toJSON;
+  return obj;
 }
 
 function randomLong(unsigned = false) {
@@ -65278,6 +67146,15 @@ class LongMap extends CustomMap {
     super(longToFastString, longFromFastString);
   }
 }
+const proto = class LongMap2 {
+}.prototype;
+LongMap.prototype[customInspectSymbol] = function() {
+  const res = Object.create(proto);
+  this.forEach((v, k) => {
+    res[k.toString()] = v;
+  });
+  return res;
+};
 class LongSet extends CustomSet {
   constructor() {
     super(longToFastString, longFromFastString);
@@ -65585,7 +67462,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
   }
   const dhPrime = fromBytes(serverDhInner.dhPrime);
   const timeOffset = serverDhInner.serverTime - Math.floor(performance.now() / 1e3);
-  session.updateTimeOffset(timeOffset);
+  session.updateTimeOffset(timeOffset, true);
   const g = BigInt(serverDhInner.g);
   const gA = fromBytes(serverDhInner.gA);
   checkDhPrime(crypto, log, dhPrime, serverDhInner.g);
@@ -65839,6 +67716,27 @@ class AuthKey {
   }
 }
 
+const MAX_SAVED_MESSAGE_IDS = 1e3;
+class MessageIdStore {
+  _ids = new SortedArray([], compareLongs);
+  add(msgId) {
+    const ids = this._ids;
+    if (ids.index(msgId) !== -1) return false;
+    if (ids.length >= MAX_SAVED_MESSAGE_IDS && compareLongs(ids.raw[0], msgId) > 0) {
+      return false;
+    }
+    ids.insert(msgId);
+    if (ids.length > MAX_SAVED_MESSAGE_IDS) ids.raw.shift();
+    return true;
+  }
+  has(msgId) {
+    return this._ids.index(msgId) !== -1;
+  }
+  clear() {
+    this._ids.clear();
+  }
+}
+
 class MtprotoSession {
   constructor(_crypto, log, _readerMap, _writerMap, _salts) {
     this._crypto = _crypto;
@@ -65847,6 +67745,7 @@ class MtprotoSession {
     this._writerMap = _writerMap;
     this._salts = _salts;
     this.log.prefix = `[SESSION ${this._sessionId.toString(16)}] `;
+    this._salts.setTimeSource(this.getServerTime.bind(this));
     this._authKey = new AuthKey(_crypto, log, _readerMap);
     this._authKeyTemp = new AuthKey(_crypto, log, _readerMap);
     this._authKeyTempSecondary = new AuthKey(_crypto, log, _readerMap);
@@ -65861,7 +67760,8 @@ class MtprotoSession {
   /// state ///
   // recent msg ids
   recentOutgoingMsgIds = new LruSet(1e3, LongSet);
-  recentIncomingMsgIds = new LruSet(1e3, LongSet);
+  recentIncomingMsgIds = new MessageIdStore();
+  // <deno-tsignore>
   recentStateRequests = new LruMap(1e3, LongMap);
   // queues
   queuedRpc = new Deque();
@@ -65883,12 +67783,10 @@ class MtprotoSession {
   lastPingRtt = Number.NaN;
   lastPingTime = 0;
   lastPingMsgId = Long.ZERO;
+  lastActivityTime = 0;
   lastSessionCreatedUid = Long.ZERO;
   initConnectionCalled = false;
   authorizationPending = false;
-  next429Timeout = 1e3;
-  current429Timeout;
-  next429ResetTimeout;
   get hasPendingMessages() {
     return Boolean(
       this.queuedRpc.length || this.queuedAcks.length || this.queuedStateReq.length || this.queuedResendReq.length || this.queuedCancelReq.length
@@ -65901,7 +67799,6 @@ class MtprotoSession {
     if (withAuthKey) {
       this.resetAuthKey();
     }
-    clearTimeoutWrap(this.current429Timeout);
     this.resetState(withAuthKey);
   }
   resetAuthKey() {
@@ -65909,10 +67806,14 @@ class MtprotoSession {
     this._authKeyTemp.reset();
     this._authKeyTempSecondary.reset();
   }
-  updateTimeOffset(offset) {
+  updateTimeOffset(offset, force = false) {
+    if (!force && offset <= this._timeOffset) return;
     this.log.debug("time offset updated: %d", offset);
     this._timeOffset = offset;
     this._lastMessageId = Long.ZERO;
+  }
+  getServerTime() {
+    return Math.floor(performance.now() / 1e3) + this._timeOffset;
   }
   /**
    * Reset session state and generate a new session ID.
@@ -66023,23 +67924,6 @@ class MtprotoSession {
     else writer.object(content);
     return messageId;
   }
-  onTransportFlood(callback) {
-    if (this.current429Timeout) return;
-    this.resetLastPing(true);
-    const timeout = this.next429Timeout;
-    this.next429Timeout = Math.min(this.next429Timeout * 2, 32e3);
-    clearTimeoutWrap(this.current429Timeout);
-    clearTimeoutWrap(this.next429ResetTimeout);
-    this.current429Timeout = setTimeoutWrap(() => {
-      this.current429Timeout = void 0;
-      callback();
-    }, timeout);
-    this.next429ResetTimeout = setTimeoutWrap(() => {
-      this.next429ResetTimeout = void 0;
-      this.next429Timeout = 1e3;
-    }, 6e4);
-    this.log.debug("transport flood, waiting for %d ms before proceeding", timeout);
-  }
   resetLastPing(withTime = false) {
     if (withTime) this.lastPingTime = 0;
     if (!this.lastPingMsgId.isZero()) {
@@ -66074,6 +67958,143 @@ class MtprotoSession {
   }
 }
 
+class FloodControl {
+  _rules;
+  _maxWindow;
+  _events = [];
+  constructor(rules) {
+    if (rules.length === 0) throw new Error("FloodControl needs at least one rule");
+    this._rules = rules;
+    this._maxWindow = rules.reduce((m, r) => Math.max(m, r.windowMs), 0);
+  }
+  /** Earliest absolute perf-now ms at which a new event is permitted. */
+  getWakeupAt(now) {
+    let wakeup = 0;
+    for (const { count, windowMs } of this._rules) {
+      const cutoff = now - windowMs;
+      let inWindow = 0;
+      let oldestInWindowIdx = -1;
+      for (let i = this._events.length - 1; i >= 0; i--) {
+        if (this._events[i] <= cutoff) break;
+        inWindow++;
+        oldestInWindowIdx = i;
+      }
+      if (inWindow >= count) {
+        const t = this._events[oldestInWindowIdx] + windowMs;
+        if (t > wakeup) wakeup = t;
+      }
+    }
+    return wakeup;
+  }
+  addEvent(now) {
+    this._events.push(now);
+    this._prune(now);
+  }
+  _prune(now) {
+    const cutoff = now - this._maxWindow;
+    let i = 0;
+    while (i < this._events.length && this._events[i] < cutoff) i++;
+    if (i > 0) this._events.splice(0, i);
+  }
+  reset() {
+    this._events = [];
+  }
+}
+const DEFAULT_SANITY_LIMITS = [
+  { count: 5, windowMs: 1e4 }
+];
+const DEFAULT_FLOOD_LIMITS = [
+  { count: 1, windowMs: 1e3 },
+  { count: 4, windowMs: 2e3 },
+  { count: 8, windowMs: 3e3 }
+];
+const DEFAULT_MTPROTO_ERROR_LIMITS = [
+  { count: 1, windowMs: 1e3 },
+  { count: 4, windowMs: 2e3 },
+  { count: 8, windowMs: 3e3 }
+];
+class ConnectionFloodController {
+  sanity;
+  flood;
+  mtprotoError;
+  _log;
+  constructor(limits = {}) {
+    this.sanity = new FloodControl(limits.sanity ?? DEFAULT_SANITY_LIMITS);
+    this.flood = new FloodControl(limits.flood ?? DEFAULT_FLOOD_LIMITS);
+    this.mtprotoError = new FloodControl(limits.mtprotoError ?? DEFAULT_MTPROTO_ERROR_LIMITS);
+  }
+  setLogger(log) {
+    this._log = log;
+  }
+  /**
+   * Notify a network-up transition.
+   *
+   * TDLib clears sanity + online-regime flood + backoff on
+   * `ConnectionCreator::on_network(true)`. We don't model the online regime,
+   * and our transport layer owns its own reconnect backoff, so only the
+   * sanity limiter is reset here.
+   */
+  notifyNetworkUp() {
+    this._log?.debug("network up, resetting sanity limiter");
+    this.sanity.reset();
+  }
+  /** Record an MTProto-level error (transport 429; per TDLib, other codes don't tick this). */
+  addMtprotoError(now = performance.now()) {
+    this._log?.debug("recording mtproto error");
+    this.mtprotoError.addEvent(now);
+  }
+  /** Earliest perf-now ms at which a new connection attempt is permitted. */
+  getWakeupAt(now) {
+    return Math.max(
+      this.sanity.getWakeupAt(now),
+      this.flood.getWakeupAt(now),
+      this.mtprotoError.getWakeupAt(now)
+    );
+  }
+  /**
+   * Block until a connection attempt is permitted under all applicable
+   * limiters, then record the attempt. Concurrent waiters serialize fairly
+   * because the first to wake records its event before the next checks state.
+   *
+   * If `signal` aborts, the pending timer is cleared and the promise rejects
+   * with the signal's reason.
+   */
+  async wait(signal) {
+    let waited = false;
+    while (true) {
+      signal?.throwIfAborted();
+      const now = performance.now();
+      const wakeup = this.getWakeupAt(now);
+      if (wakeup <= now) {
+        this.sanity.addEvent(now);
+        this.flood.addEvent(now);
+        if (waited) this._log?.debug("admitted connect after waiting");
+        return;
+      }
+      const delay = wakeup - now;
+      this._log?.debug("connect throttled (waiting %dms)", Math.round(delay));
+      waited = true;
+      await new Promise((resolve, reject) => {
+        const handle = setTimeoutWrap(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
+        const onAbort = () => {
+          clearTimeoutWrap(handle);
+          reject(signal.reason);
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+  }
+  /** Reset all internal state. Mainly for tests. */
+  reset() {
+    this.sanity.reset();
+    this.flood.reset();
+    this.mtprotoError.reset();
+  }
+}
+
 let nextConnectionUid = 0;
 class PersistentConnection {
   constructor(params, log) {
@@ -66082,12 +68103,23 @@ class PersistentConnection {
     this.params.transport.setup?.(this.params.crypto, log);
     this._codec = this.params.transport.packetCodec(params.dc);
     this._codec.setup?.(this.params.crypto, this.log);
+    if (params.floodControl) {
+      this._floodControl = new ConnectionFloodController(params.floodControl);
+      this._floodControl.setLogger(log.create("flood"));
+    }
     this._onInactivityTimeout = this._onInactivityTimeout.bind(this);
     this._fuman = new PersistentConnection$1({
-      connect: (dc) => {
+      connect: async (dc, abortSignal) => {
+        if (this._floodControl) {
+          if (!this._connectAbort || this._connectAbort.signal.aborted) {
+            this._connectAbort = new AbortController();
+          }
+          this._updateLogPrefix();
+          await this._floodControl.wait(this._connectAbort.signal);
+        }
         this._updateLogPrefix();
         this.log.debug("connecting to %j", dc);
-        return params.transport.connect(dc);
+        return params.transport.connect(dc, abortSignal);
       },
       strategy: params.reconnectionStrategy,
       onOpen: this._onOpen.bind(this),
@@ -66113,6 +68145,14 @@ class PersistentConnection {
   _inactive = true;
   _destroyed = false;
   _usable = false;
+  // each connection slot throttles its own connect attempts, mirroring
+  // TDLib's per-SessionProxy flood control. a fresh controller has empty
+  // limiters, so the first connect always passes immediately.
+  _floodControl;
+  // aborts a pending flood-control wait when the connection is being
+  // closed (manually or for good) — otherwise close() would block until
+  // the wait expires, and the connect would still proceed afterwards
+  _connectAbort;
   onWait = new Emitter();
   onUsable = new Emitter();
   onError = new Emitter();
@@ -66177,6 +68217,7 @@ class PersistentConnection {
     return "reconnect";
   }
   async changeTransport(transport) {
+    this._connectAbort?.abort();
     await this._fuman.close();
     this._codec = transport.packetCodec(this.params.dc);
     this._codec.setup?.(this.params.crypto, this.log);
@@ -66184,10 +68225,18 @@ class PersistentConnection {
     this._fuman.connect(this.params.dc);
   }
   connect() {
+    if (this._destroyed) {
+      this.log.warn("tried to connect a destroyed connection, ignoring");
+      return;
+    }
     this._fuman.connect(this.params.dc);
     this._inactive = false;
   }
   reconnect() {
+    if (this._destroyed) {
+      this.log.warn("tried to reconnect a destroyed connection, ignoring");
+      return;
+    }
     if (this._disconnectedManually) {
       this._disconnectedManually = false;
       this.connect();
@@ -66200,6 +68249,7 @@ class PersistentConnection {
       clearTimeoutWrap(this._inactivityTimeout);
     }
     this._disconnectedManually = true;
+    this._connectAbort?.abort();
     await this._fuman.close();
   }
   async destroy() {
@@ -66207,6 +68257,7 @@ class PersistentConnection {
       clearTimeoutWrap(this._inactivityTimeout);
     }
     this._destroyed = true;
+    this._connectAbort?.abort();
     await this._fuman.close();
   }
   _rescheduleInactivity() {
@@ -66218,6 +68269,7 @@ class PersistentConnection {
     this.log.info("disconnected because of inactivity for %d", this.params.inactivityTimeout);
     this._inactive = true;
     this._inactivityTimeout = null;
+    this._connectAbort?.abort();
     Promise.resolve(this._fuman.close()).catch((err) => {
       this.log.warn("error closing transport: %e", err);
     });
@@ -66262,6 +68314,8 @@ class TransportError extends Error {
 }
 
 const TEMP_AUTH_KEY_EXPIRY = 86400;
+const TEMP_AUTH_KEY_REFRESH_MARGIN = 3600;
+const TEMP_AUTH_KEY_REFRESH_JITTER = 600;
 const GET_STATE_INTERVAL = 1500;
 const GET_STATE_TIMEOUT = 2500;
 const GZIP_PACKED_ID = 812830625;
@@ -66273,6 +68327,8 @@ const INVOKE_AFTER_MSG_SIZE = 12;
 class SessionConnection extends PersistentConnection {
   _flushTimer = new EarlyTimer();
   _queuedDestroySession = [];
+  _needDestroyAuthKey = false;
+  _sentDestroyAuthKey = false;
   // waitForMessage
   _pendingWaitForUnencrypted = [];
   _usePfs;
@@ -66285,14 +68341,12 @@ class SessionConnection extends PersistentConnection {
   _crypto;
   _salts;
   _session;
-  // todo: we should probably do adaptive ping interval based on rtt like tdlib:
-  // https://github.com/tdlib/td/blob/91aa6c9e4d0774eabf4f8d7f3aa51239032059a6/td/mtproto/SessionConnection.h
   _pingInterval;
+  _randomDelay = getRandomInt(5e3);
   // NB: dont forget to update .reset()
   onDisconnect = new Emitter();
   onKeyChange = new Emitter();
   onTmpKeyChange = new Emitter();
-  onFloodDone = new Emitter();
   onRequestAuth = new Emitter();
   onAuthBegin = new Emitter();
   onUpdate = new Emitter();
@@ -66318,6 +68372,7 @@ class SessionConnection extends PersistentConnection {
     this._online = params.platform.isOnline?.() ?? true;
   }
   _online;
+  _active = false;
   getAuthKey(temp = false) {
     const key = temp ? this._session._authKeyTemp : this._session._authKey;
     if (!key.ready) return null;
@@ -66343,12 +68398,21 @@ class SessionConnection extends PersistentConnection {
     for (const msgId of this._session.pendingGetStateTimeouts.keys()) {
       this._onMessageFailed(msgId, "connection loss", true);
     }
+    for (const rpc of this._session.getStateSchedule.raw) {
+      rpc.getState = 0;
+    }
     this.onDisconnect.emit();
     this.reset();
   }
   async destroy() {
     await super.destroy();
     this.reset(true);
+  }
+  destroyAuthKey() {
+    if (!this._session._authKey.ready || this._needDestroyAuthKey) return;
+    this._needDestroyAuthKey = true;
+    this._sentDestroyAuthKey = false;
+    this._flushTimer.emitNow();
   }
   reset(forever = false) {
     this._session.initConnectionCalled = false;
@@ -66359,12 +68423,12 @@ class SessionConnection extends PersistentConnection {
       clearTimeoutWrap(timeout);
     }
     this._session.pendingGetStateTimeouts.clear();
+    if (this._needDestroyAuthKey) this._sentDestroyAuthKey = false;
     if (forever) {
       clearTimeoutWrap(this._pfsUpdateTimeout);
       this.onDisconnect.clear();
       this.onKeyChange.clear();
       this.onTmpKeyChange.clear();
-      this.onFloodDone.clear();
       this.onRequestAuth.clear();
       this.onAuthBegin.clear();
       this.onUpdate.clear();
@@ -66428,13 +68492,15 @@ class SessionConnection extends PersistentConnection {
       this.log.error("transport error %d", error.code);
       this._onAllFailed(`transport error ${error.code}`);
       if (error.code === 429) {
-        this._session.onTransportFlood(() => this.onFloodDone.emit());
+        this._floodControl?.addMtprotoError();
         return;
       }
     }
     this.onError.emit(error);
   }
   onConnectionUsable() {
+    this._session.lastActivityTime = performance.now();
+    this._active = false;
     if (this.params.withUpdates) {
       this.sendRpc({ _: "updates.getState" }).catch((err) => {
         if (this._destroyed || RpcError.is(err, "AUTH_KEY_UNREGISTERED")) return;
@@ -66458,7 +68524,7 @@ class SessionConnection extends PersistentConnection {
     doAuthorization(this, this._crypto).then(([authKey, serverSalt, timeOffset]) => {
       this._session._authKey.setup(authKey);
       this._salts.currentSalt = serverSalt;
-      this._session.updateTimeOffset(timeOffset);
+      this._session.updateTimeOffset(timeOffset, true);
       this._session.authorizationPending = false;
       this.onKeyChange.emit(authKey);
       if (this._usePfs) {
@@ -66574,7 +68640,7 @@ class SessionConnection extends PersistentConnection {
           this.log.debug("temp key is expiring soon");
           this._authorizePfs(true);
         },
-        (TEMP_AUTH_KEY_EXPIRY - 60) * 1e3
+        (TEMP_AUTH_KEY_EXPIRY - TEMP_AUTH_KEY_REFRESH_MARGIN - getRandomInt(TEMP_AUTH_KEY_REFRESH_JITTER)) * 1e3
       );
     }).catch((err) => {
       if (this._destroyed) return;
@@ -66602,6 +68668,7 @@ class SessionConnection extends PersistentConnection {
   }
   _warnedAboutUpdates = false;
   onMessage(data) {
+    this._session.lastActivityTime = performance.now();
     if (this._pendingWaitForUnencrypted.length) {
       const int32 = new Int32Array(data.buffer, data.byteOffset, 2);
       if (int32[0] === 0 && int32[1] === 0) {
@@ -66656,13 +68723,12 @@ class SessionConnection extends PersistentConnection {
       this.log.warn("warn: ignoring message with invalid messageId = %s (is even)", messageId);
       return;
     }
-    if (this._session.recentIncomingMsgIds.has(messageId)) {
-      this.log.debug("ignoring duplicate message %s", messageId);
+    if (!this._session.recentIncomingMsgIds.add(messageId)) {
+      this.log.debug("ignoring duplicate or too old message %s", messageId);
       return;
     }
     const message = message_;
     this.log.debug("received %s (msg_id: %l)", message._, messageId);
-    this._session.recentIncomingMsgIds.add(messageId);
     switch (message._) {
       case "mt_msgs_ack":
       case "mt_http_wait":
@@ -66714,6 +68780,16 @@ class SessionConnection extends PersistentConnection {
       case "mt_destroy_session_ok":
       case "mt_destroy_session_none":
         this.log.debug("received %s (msg_id = %l): %j", message._, messageId, message);
+        break;
+      case "mt_destroy_auth_key_ok":
+      case "mt_destroy_auth_key_none":
+        this.log.info("auth key destroyed: %s", message._);
+        this._needDestroyAuthKey = false;
+        this._sentDestroyAuthKey = false;
+        break;
+      case "mt_destroy_auth_key_fail":
+        this.log.warn("auth key destruction failed");
+        this._sentDestroyAuthKey = false;
         break;
       default:
         if (isAnyUpdates(message)) {
@@ -67037,6 +69113,7 @@ class SessionConnection extends PersistentConnection {
     }
     this.log.debug("received pong: msg_id %l, ping_id %l, rtt = %dms", msgId, pingId, rtt);
     this._session.resetLastPing();
+    this._flushTimer.emitBefore(this._session.lastPingTime + this._pingMustDelay());
   }
   _onBadServerSalt(msg) {
     this._salts.currentSalt = msg.newServerSalt;
@@ -67044,8 +69121,19 @@ class SessionConnection extends PersistentConnection {
   }
   _onBadMsgNotification(msgId, msg) {
     switch (msg.errorCode) {
+      case 17: {
+        const serverTime = msgId.high >>> 0;
+        const timeOffset = serverTime - Math.floor(performance.now() / 1e3);
+        this._session.updateTimeOffset(timeOffset, true);
+        this.log.warn(
+          "msg_id too high, server time: %d, corrected offset to %d, resetting session",
+          serverTime,
+          timeOffset
+        );
+        this._resetSession("msg_id too high");
+        break;
+      }
       case 16:
-      case 17:
       case 20: {
         if (msg.errorCode !== 20) {
           const serverTime = msgId.high >>> 0;
@@ -67215,6 +69303,9 @@ class SessionConnection extends PersistentConnection {
     }
   }
   sendRpc(request, timeout, abortSignal, chainId) {
+    if (this._destroyed) {
+      return Promise.reject(new MtcuteError("Connection destroyed"));
+    }
     if (this._usable && this.params.inactivityTimeout) {
       this._rescheduleInactivity();
     }
@@ -67300,6 +69391,7 @@ class SessionConnection extends PersistentConnection {
   notifyNetworkChanged(online) {
     this._online = online;
     if (online) {
+      this._floodControl?.notifyNetworkUp();
       if (this._inactive) return;
       this.reconnect();
     } else {
@@ -67357,9 +69449,6 @@ class SessionConnection extends PersistentConnection {
     this._inactivityPendingFlush = true;
     this._flush();
   }
-  flushWhenIdle() {
-    this._flushTimer.emitWhenIdle();
-  }
   _handleGetStateTimeout = (msgId) => {
     const pending = this._session.pendingGetStateTimeouts.get(msgId);
     if (!pending) {
@@ -67368,17 +69457,59 @@ class SessionConnection extends PersistentConnection {
     }
     this._onMessageFailed(msgId, "timeout");
   };
+  // https://github.com/tdlib/td/blob/master/td/mtproto/SessionConnection.h
+  _rtt() {
+    const rtt = this._session.lastPingRtt;
+    if (Number.isNaN(rtt)) return 2e3;
+    return Math.max(2e3, rtt * 1.5 + 1e3);
+  }
+  _readDisconnectDelay() {
+    return this._active ? this._rtt() * 3.5 : 135e3 + this._randomDelay;
+  }
+  _pingDisconnectDelay() {
+    return this._active && this.params.isMainConnection ? this._rtt() * 2.5 : 135e3 + this._randomDelay;
+  }
+  _pingMustDelay() {
+    return this._active ? this._rtt() : this._pingInterval + this._randomDelay;
+  }
+  _isActive() {
+    if (this._session.queuedRpc.length > 0) return true;
+    for (const msg of this._session.pendingMessages.values()) {
+      if (msg._ === "rpc") return true;
+    }
+    return false;
+  }
+  _checkTimeouts(now) {
+    if (!this._session.lastPingMsgId.isZero() && now - this._session.lastPingTime > this._pingDisconnectDelay()) {
+      this.log.warn("ping timeout, no pong for %dms", Math.round(now - this._session.lastPingTime));
+      this._resetSession("ping timeout");
+      return true;
+    }
+    if (now - this._session.lastActivityTime > this._readDisconnectDelay()) {
+      this.log.warn("read timeout, last read was %dms ago", Math.round(now - this._session.lastActivityTime));
+      this._resetSession("read timeout");
+      return true;
+    }
+    return false;
+  }
   _flush() {
-    if (this._disconnectedManually || !this._session._authKey.ready || this._isPfsBindingPending || this._session.current429Timeout) {
+    if (this._disconnectedManually || !this._session._authKey.ready || this._isPfsBindingPending) {
       this.log.debug(
-        "skipping flush, connection is not usable (offline = %b, auth key ready = %b, pfs binding pending = %b, 429 timeout = %b)",
+        "skipping flush, connection is not usable (offline = %b, auth key ready = %b, pfs binding pending = %b)",
         this._disconnectedManually,
         this._session._authKey.ready,
-        this._isPfsBindingPending,
-        this._session.current429Timeout
+        this._isPfsBindingPending
       );
       return;
     }
+    const now = performance.now();
+    const active = this._online && this._isActive();
+    if (active && !this._active) {
+      this._session.lastActivityTime = now;
+      this._session.resetLastPing(true);
+    }
+    this._active = active;
+    if (this._checkTimeouts(now)) return;
     try {
       this._doFlush();
     } catch (e) {
@@ -67389,9 +69520,11 @@ class SessionConnection extends PersistentConnection {
     if (this._session.hasPendingMessages) {
       this._flushTimer.emitWhenIdle();
     } else {
-      const nextPingTime = this._session.lastPingTime + this._pingInterval;
+      const nextPingTime = this._session.lastPingMsgId.isZero() ? this._session.lastPingTime + this._pingMustDelay() : Infinity;
       const nextGetScheduleTime = this._session.getStateSchedule.raw[0]?.getState || Infinity;
-      this._flushTimer.emitBefore(Math.min(nextPingTime, nextGetScheduleTime));
+      const readDeadline = this._session.lastActivityTime + this._readDisconnectDelay();
+      const pingDeadline = this._session.lastPingMsgId.isZero() ? Infinity : this._session.lastPingTime + this._pingDisconnectDelay();
+      this._flushTimer.emitBefore(Math.min(nextPingTime, nextGetScheduleTime, readDeadline, pingDeadline));
     }
   }
   _doFlush() {
@@ -67415,6 +69548,7 @@ class SessionConnection extends PersistentConnection {
     let resendMsgIds = null;
     let cancelRpcs = null;
     let destroySessions = null;
+    let destroyAuthKey = false;
     let rootMsgId = null;
     const now = performance.now();
     if (this._session.queuedAcks.length) {
@@ -67434,20 +69568,12 @@ class SessionConnection extends PersistentConnection {
       packetSize += ackRequest.length + 16;
       messageCount += 1;
     }
-    if (now - this._session.lastPingTime > this._pingInterval) {
-      if (!this._session.lastPingMsgId.isZero()) {
-        this.log.warn("didn't receive pong for previous ping (msg_id = %l). are we offline?", this._session.lastPingMsgId);
-        if (!this._disconnectedManually) {
-          this._resetSession("ping timeout");
-        }
-        return;
-      }
+    if (this._session.lastPingMsgId.isZero() && now - this._session.lastPingTime > this._pingMustDelay()) {
       pingId = randomLong();
       const obj = {
         _: "mt_ping_delay_disconnect",
         pingId,
-        // ÷ 1000 * 1.25
-        disconnectDelay: Math.round(this._pingInterval * 125e-5)
+        disconnectDelay: Math.round(this._pingDisconnectDelay() / 1e3) + 2
       };
       this._session.lastPingTime = now;
       pingRequest = TlBinaryWriter.serializeObject(this._writerMap, obj);
@@ -67508,6 +69634,11 @@ class SessionConnection extends PersistentConnection {
       containerSize += this._queuedDestroySession.length * 28;
       destroySessions = this._queuedDestroySession;
       this._queuedDestroySession = [];
+    }
+    if (this._needDestroyAuthKey && !this._sentDestroyAuthKey) {
+      destroyAuthKey = true;
+      containerMessageCount += 1;
+      containerSize += 20;
     }
     if (this._salts.shouldFetchSalts()) {
       const obj = {
@@ -67618,6 +69749,10 @@ class SessionConnection extends PersistentConnection {
         this._session.pendingMessages.set(msgId, pending);
         otherPendings.push(pending);
       });
+    }
+    if (destroyAuthKey) {
+      this._registerOutgoingMsgId(this._session.writeMessage(writer, { _: "mt_destroy_auth_key" }));
+      this._sentDestroyAuthKey = true;
     }
     if (getFutureSaltsRequest) {
       getFutureSaltsMsgId = this._registerOutgoingMsgId(this._session.writeMessage(writer, getFutureSaltsRequest));
@@ -67744,6 +69879,24 @@ class MultiSessionConnection {
     this._enforcePfs = _count > 1 && params.isMainConnection;
     this._updateConnections();
   }
+  static _pickConnection(loads, ready) {
+    let min = Infinity;
+    let minIdx = 0;
+    let foundReady = false;
+    for (let i = 0; i < loads.length; i++) {
+      const isReady = ready[i];
+      if (foundReady && !isReady) continue;
+      if (isReady && !foundReady) {
+        foundReady = true;
+        min = Infinity;
+      }
+      if (loads[i] < min) {
+        min = loads[i];
+        minIdx = i;
+      }
+    }
+    return minIdx;
+  }
   _log;
   _enforcePfs = false;
   // NB: dont forget to update .reset()
@@ -67831,10 +69984,6 @@ class MultiSessionConnection {
       conn.onUsable.add(() => this.onUsable.emit(i));
       conn.onWait.add(() => this.onWait.emit(i));
       conn.onRequestAuth.add(() => this.onRequestAuth.emit(i));
-      conn.onFloodDone.add(() => {
-        this._log.debug("received flood-done from connection %d", i);
-        this._connections.forEach((it) => it.flushWhenIdle());
-      });
       this._connections.push(conn);
       if (this._authKey !== null) conn._session._authKey.setup(this._authKey);
       if (connect && !enforcePfsChanged) conn.connect();
@@ -67855,19 +70004,15 @@ class MultiSessionConnection {
     this.onRequestAuth.clear();
     this._destroyed = true;
   }
-  _nextConnection = 0;
   sendRpc(request, timeout, abortSignal, chainId) {
-    let min = Infinity;
-    let minIdx = 0;
-    for (let i = 0; i < this._connections.length; i++) {
-      const conn = this._connections[i];
-      const total = conn._session.queuedRpc.length + conn._session.pendingMessages.size;
-      if (total < min) {
-        min = total;
-        minIdx = i;
-      }
-    }
-    return this._connections[minIdx].sendRpc(request, timeout, abortSignal, chainId);
+    const loads = this._connections.map((c) => c._session.queuedRpc.length + c._session.pendingMessages.size);
+    const ready = this._connections.map((c) => c.isConnected);
+    return this._connections[MultiSessionConnection._pickConnection(loads, ready)].sendRpc(
+      request,
+      timeout,
+      abortSignal,
+      chainId
+    );
   }
   connect() {
     for (const conn of this._connections) {
@@ -67877,6 +70022,13 @@ class MultiSessionConnection {
   ensureConnected() {
     if (this._connections[0].isConnected) return;
     this.connect();
+  }
+  get isConnected() {
+    return this._connections.some((conn) => conn.isConnected);
+  }
+  destroyAuthKey() {
+    const conn = this._connections.find((c) => c.isConnected) ?? this._connections[0];
+    conn?.destroyAuthKey();
   }
   _authKey = null;
   setAuthKey(authKey) {
@@ -67943,12 +70095,16 @@ class ServerSaltManager {
   _futureSalts = [];
   currentSalt = Long.ZERO;
   isFetching = false;
+  _getServerTime = () => Date.now() / 1e3;
+  setTimeSource(fn) {
+    this._getServerTime = fn;
+  }
   shouldFetchSalts() {
     return !this.isFetching && !this.currentSalt.isZero() && this._futureSalts.length < 2;
   }
   setFutureSalts(salts) {
     this._futureSalts = salts;
-    const now = Date.now() / 1e3;
+    const now = this._getServerTime();
     while (salts.length > 0 && salts[0].validSince <= now) {
       this.currentSalt = salts[0].salt;
       this._futureSalts.shift();
@@ -67962,11 +70118,11 @@ class ServerSaltManager {
     this._timer = setTimeoutWrap(() => {
       this.currentSalt = salt.salt;
       this._replaceAndScheduleNext();
-    }, salt.validSince * 1e3 - Date.now());
+    }, (salt.validSince - this._getServerTime()) * 1e3);
   }
   _replaceAndScheduleNext() {
     if (this._timer) clearTimeoutWrap(this._timer);
-    const now = Date.now() / 1e3;
+    const now = this._getServerTime();
     while (this._futureSalts.length !== 0) {
       const salt = this._futureSalts[0];
       if (salt.validSince > now) break;
@@ -68021,7 +70177,8 @@ class DcConnectionManager {
       // NB: we need a separate salts manager for each pfs connection, because server salts are auth_key-bound
       salts: managerParams.usePfs ? new ServerSaltManager() : this._salts,
       platform: managerParams.platform,
-      pingInterval: managerParams.pingInterval ?? 6e4
+      pingInterval: managerParams.pingInterval ?? 6e4,
+      floodControl: managerParams.floodControl === false ? void 0 : managerParams.floodControl ?? {}
     });
     const mainParams = baseConnectionParams();
     mainParams.isMainConnection = true;
@@ -68194,7 +70351,7 @@ class NetworkManager {
       _: "initConnection",
       deviceModel,
       systemVersion: "1.0",
-      appVersion: "0.29.6",
+      appVersion: "0.31.0",
       systemLangCode: "en",
       langPack: "",
       // "langPacks are for official apps only"
@@ -68246,34 +70403,45 @@ class NetworkManager {
     return { main, media };
   }
   _resetOnNetworkChange;
+  _destroyed = false;
+  _teardownAbort = new AbortController();
+  /** Signal that is aborted when the network manager is disconnected or destroyed */
+  get teardownSignal() {
+    return this._teardownAbort.signal;
+  }
+  _onPrimaryUsable = () => this.params.onUsable();
+  _onPrimaryWait = () => this.params.onConnecting();
+  _onPrimaryUpdate = (update) => this._updateHandler(update, false);
   _switchPrimaryDc(dc) {
     if (this._primaryDc && this._primaryDc !== dc) {
       this._primaryDc.setIsPrimary(false);
+      this._primaryDc.main.onUsable.remove(this._onPrimaryUsable);
+      this._primaryDc.main.onWait.remove(this._onPrimaryWait);
+      this._primaryDc.main.onUpdate.remove(this._onPrimaryUpdate);
     }
     this._primaryDc = dc;
     dc.setIsPrimary(true);
     this.params.onConnecting();
-    dc.main.onUsable.add(() => {
-      if (dc !== this._primaryDc) return;
-      this.params.onUsable();
-    });
-    dc.main.onWait.add(() => {
-      if (dc !== this._primaryDc) return;
-      this.params.onConnecting();
-    });
-    dc.main.onUpdate.add((update) => {
-      this._updateHandler(update, false);
-    });
+    dc.main.onUsable.remove(this._onPrimaryUsable);
+    dc.main.onWait.remove(this._onPrimaryWait);
+    dc.main.onUpdate.remove(this._onPrimaryUpdate);
+    dc.main.onUsable.add(this._onPrimaryUsable);
+    dc.main.onWait.add(this._onPrimaryWait);
+    dc.main.onUpdate.add(this._onPrimaryUpdate);
     return dc.loadKeys().then(() => dc.main.ensureConnected());
   }
   _dcCreationPromise = /* @__PURE__ */ new Map();
   async _getOtherDc(dcId) {
+    if (this._destroyed) {
+      throw new MtcuteError("Network manager is destroyed");
+    }
     if (!this._dcConnections.has(dcId)) {
       if (this._dcCreationPromise.has(dcId)) {
         await this._dcCreationPromise.get(dcId);
         return asNonNull(this._dcConnections.get(dcId));
       }
       const promise = new Deferred();
+      promise.promise.catch(noop);
       this._dcCreationPromise.set(dcId, promise.promise);
       this._log.debug("creating new DC %d", dcId);
       try {
@@ -68290,7 +70458,7 @@ class NetworkManager {
         this._log.debug("dc %d was not created: %e", dcId, e);
         promise.reject(e);
         this._dcCreationPromise.delete(dcId);
-        return this._getOtherDc(dcId);
+        throw e;
       }
     }
     return this._dcConnections.get(dcId);
@@ -68301,8 +70469,14 @@ class NetworkManager {
    * @param defaultDcs  Default DCs to connect to
    */
   async connect(defaultDcs) {
+    if (this._destroyed) {
+      throw new MtcuteError("Network manager is destroyed");
+    }
     if (defaultDcs.main.id !== defaultDcs.media.id) {
       throw new MtArgumentError("Default DCs must be the same");
+    }
+    if (this._teardownAbort.signal.aborted) {
+      this._teardownAbort = new AbortController();
     }
     if (this._dcConnections.has(defaultDcs.main.id)) {
       throw new MtArgumentError("DC manager already exists");
@@ -68342,11 +70516,12 @@ class NetworkManager {
       }
       assertTypeIs("auth.importAuthorization", res, "auth.authorization");
       promise.resolve();
-      this._pendingExports.delete(manager.dcId);
     } catch (e) {
       this._log.warn("failed to export auth to dc %d: %s", manager.dcId, e);
       promise.reject(e);
       throw e;
+    } finally {
+      this._pendingExports.delete(manager.dcId);
     }
   }
   setIsPremium(isPremium) {
@@ -68382,6 +70557,12 @@ class NetworkManager {
     return user;
   }
   notifyLoggedOut() {
+    const primaryDcId = this._primaryDc?.dcId;
+    for (const dc of this._dcConnections.values()) {
+      if (dc.dcId === primaryDcId) continue;
+      const pool = [dc.main, dc.download, dc.upload, dc.downloadSmall].find((p) => p.isConnected);
+      pool?.destroyAuthKey();
+    }
     this._businessConnectionDcs.clear();
     this.setIsPremium(false);
     this.resetSessions();
@@ -68410,6 +70591,9 @@ class NetworkManager {
     }
   }
   async changePrimaryDc(newDc) {
+    if (this._destroyed) {
+      throw new MtcuteError("Network manager is destroyed");
+    }
     if (newDc === this._primaryDc?.dcId) return;
     const options = await this._findDcOptions(newDc);
     if (!this._dcConnections.has(newDc)) {
@@ -68542,13 +70726,20 @@ class NetworkManager {
     if (!this._primaryDc) throw new MtcuteError("Not connected to any DC");
     return this._primaryDc.dcId;
   }
-  async destroy() {
+  async disconnect() {
+    this._teardownAbort.abort();
+    this._primaryDc = void 0;
     for (const dc of this._dcConnections.values()) {
       await dc.destroy();
     }
     this._dcConnections.clear();
-    this.config.onUpdated.remove(this._onConfigChanged);
     this._resetOnNetworkChange?.();
+    this._resetOnNetworkChange = void 0;
+  }
+  async destroy() {
+    this._destroyed = true;
+    await this.disconnect();
+    this.config.onUpdated.remove(this._onConfigChanged);
   }
   getMtprotoMessageId() {
     return this._primaryDc.main._connections[0]._session.getMessageId();
@@ -68643,7 +70834,6 @@ class MtClient {
         onConnecting: this.onConnecting.emit.bind(this.onConnecting),
         onNetworkChanged: this.onNetworkChanged.emit.bind(this.onNetworkChanged),
         onUpdate: this.onUpdate.emit.bind(this.onUpdate),
-        stopSignal: this.stopSignal,
         platform: params.platform,
         ...dropUndefined(params.network)
       },
@@ -68679,6 +70869,7 @@ class MtClient {
   log;
   network;
   _abortController;
+  /** Signal that is aborted when the client is destroyed */
   stopSignal;
   onUsable = new Emitter();
   onConnecting = new Emitter();
@@ -68716,12 +70907,11 @@ class MtClient {
     return this._connect.run();
   }
   async disconnect() {
-    await this.network.destroy();
+    await this.network.disconnect();
     await this.storage.save();
     this._config.destroy();
     this._prepare.reset();
     this._connect.reset();
-    this._abortController.abort();
     this.log.debug("client disconnected");
   }
   /**
@@ -68730,6 +70920,8 @@ class MtClient {
    * **Note**: must be called *after* {@link disconnect}
    */
   async destroy() {
+    this._abortController.abort();
+    await this.network.destroy();
     await this.storage.destroy();
     this.log.debug("client destroyed");
   }
@@ -69207,6 +71399,8 @@ function* getAllPeersFrom(obj) {
     case "channel":
     case "chatForbidden":
     case "channelForbidden":
+    case "community":
+    case "communityForbidden":
       yield obj;
       return;
   }
@@ -69219,6 +71413,8 @@ function* getAllPeersFrom(obj) {
       case "channel":
       case "chatForbidden":
       case "channelForbidden":
+      case "community":
+      case "communityForbidden":
         yield obj.chat;
         break;
     }
@@ -69229,6 +71425,8 @@ function* getAllPeersFrom(obj) {
       case "channel":
       case "chatForbidden":
       case "channelForbidden":
+      case "community":
+      case "communityForbidden":
         yield obj.channel;
         break;
     }
@@ -69248,6 +71446,8 @@ function* getAllPeersFrom(obj) {
           case "channel":
           case "chatForbidden":
           case "channelForbidden":
+          case "community":
+          case "communityForbidden":
             yield chat;
             break;
         }
@@ -69374,6 +71574,23 @@ class PeersService extends BaseService {
         accessHash = peer.accessHash;
         break;
       }
+      case "community":
+      case "communityForbidden": {
+        if (!peer.accessHash) {
+          this._log.warn("received community without access hash: %j", peer);
+          return;
+        }
+        dto = {
+          id: toggleChannelIdMark(peer.id),
+          accessHash: longToFastString(peer.accessHash),
+          isMin: peer._ === "community" ? peer.min : false,
+          usernames: [],
+          updated: Date.now(),
+          complete: this._serializeTl(peer)
+        };
+        accessHash = peer.accessHash;
+        break;
+      }
       default:
         return;
     }
@@ -69408,6 +71625,13 @@ class PeersService extends BaseService {
             verified: peer.verified,
             defaultBannedRights: peer.defaultBannedRights
           };
+        } else if (existing._ === "community" && peer._ === "community") {
+          newComplete = {
+            ...existing,
+            title: peer.title,
+            photo: peer.photo,
+            defaultBannedRights: peer.defaultBannedRights
+          };
         } else if (existing._ === "user" && peer._ === "user") {
           newComplete = {
             ...existing,
@@ -69426,8 +71650,10 @@ class PeersService extends BaseService {
             storiesUnavailable: peer.storiesUnavailable,
             contactRequirePremium: peer.contactRequirePremium,
             botBusiness: peer.botBusiness,
+            botGuard: peer.botGuard,
             botHasMainApp: peer.botHasMainApp,
             botCanManageBots: peer.botCanManageBots,
+            botGuestchat: peer.botGuestchat,
             photo: peer.applyMinPhoto ? peer.photo : existing.photo,
             status: !existing.status || existing.status._ === "userStatusEmpty" ? peer.status : existing.status,
             botInfoVersion: peer.botInfoVersion,
@@ -69459,6 +71685,7 @@ class PeersService extends BaseService {
     await this._refs.deleteByPeer(peer.id);
   }
   async _writePending() {
+    this._pendingWritesTimer = null;
     try {
       await asyncPool(this._pendingWrites.values(), async (dto) => {
         await this._peers.store(dto);
@@ -69954,6 +72181,166 @@ class PeersIndex {
   }
 }
 
+function walkRichText(text, visitor) {
+  if (!text) return;
+  visitor.richText?.(text);
+  switch (text._) {
+    case "textEmpty":
+    case "textPlain":
+    case "textEmail":
+    case "textPhone":
+    case "textImage":
+    case "textMath":
+    case "textCustomEmoji":
+      break;
+    case "textBold":
+    case "textItalic":
+    case "textUnderline":
+    case "textStrike":
+    case "textFixed":
+    case "textUrl":
+    case "textSubscript":
+    case "textSuperscript":
+    case "textMarked":
+    case "textAnchor":
+    case "textSpoiler":
+    case "textMention":
+    case "textHashtag":
+    case "textBotCommand":
+    case "textCashtag":
+    case "textAutoUrl":
+    case "textAutoEmail":
+    case "textAutoPhone":
+    case "textBankCard":
+    case "textDate":
+    case "textMentionName":
+      walkRichText(text.text, visitor);
+      break;
+    case "textConcat":
+      for (const child of text.texts) walkRichText(child, visitor);
+      break;
+    case "textDiff":
+      walkRichText(text.text, visitor);
+      walkRichText(text.oldText, visitor);
+      break;
+    default:
+      assertNever$1();
+  }
+}
+function walkPageCaption(caption, visitor) {
+  if (!caption) return;
+  walkRichText(caption.text, visitor);
+  walkRichText(caption.credit, visitor);
+}
+function walkPageBlock(block, visitor) {
+  if (!block) return;
+  visitor.pageBlock?.(block);
+  switch (block._) {
+    case "pageBlockUnsupported":
+    case "pageBlockDivider":
+    case "pageBlockAnchor":
+    case "pageBlockMath":
+      break;
+    case "pageBlockTitle":
+    case "pageBlockSubtitle":
+    case "pageBlockHeader":
+    case "pageBlockSubheader":
+    case "pageBlockParagraph":
+    case "pageBlockPreformatted":
+    case "pageBlockFooter":
+    case "pageBlockKicker":
+    case "pageBlockThinking":
+    case "pageBlockHeading1":
+    case "pageBlockHeading2":
+    case "pageBlockHeading3":
+    case "pageBlockHeading4":
+    case "pageBlockHeading5":
+    case "pageBlockHeading6":
+      walkRichText(block.text, visitor);
+      break;
+    case "pageBlockAuthorDate":
+      walkRichText(block.author, visitor);
+      break;
+    case "pageBlockList":
+      for (const item of block.items) {
+        switch (item._) {
+          case "pageListItemText":
+            walkRichText(item.text, visitor);
+            break;
+          case "pageListItemBlocks":
+            for (const block2 of item.blocks) walkPageBlock(block2, visitor);
+            break;
+          default:
+            assertNever$1();
+        }
+      }
+      break;
+    case "pageBlockOrderedList":
+      for (const item of block.items) {
+        switch (item._) {
+          case "pageListOrderedItemText":
+            walkRichText(item.text, visitor);
+            break;
+          case "pageListOrderedItemBlocks":
+            for (const block2 of item.blocks) walkPageBlock(block2, visitor);
+            break;
+          default:
+            assertNever$1();
+        }
+      }
+      break;
+    case "pageBlockBlockquote":
+    case "pageBlockPullquote":
+      walkRichText(block.text, visitor);
+      walkRichText(block.caption, visitor);
+      break;
+    case "pageBlockPhoto":
+    case "pageBlockVideo":
+    case "pageBlockEmbed":
+    case "pageBlockAudio":
+    case "pageBlockMap":
+    case "inputPageBlockMap":
+      walkPageCaption(block.caption, visitor);
+      break;
+    case "pageBlockCover":
+      walkPageBlock(block.cover, visitor);
+      break;
+    case "pageBlockEmbedPost":
+      for (const child of block.blocks) walkPageBlock(child, visitor);
+      walkPageCaption(block.caption, visitor);
+      break;
+    case "pageBlockCollage":
+    case "pageBlockSlideshow":
+      for (const child of block.items) walkPageBlock(child, visitor);
+      walkPageCaption(block.caption, visitor);
+      break;
+    case "pageBlockChannel":
+      break;
+    case "pageBlockTable":
+      walkRichText(block.title, visitor);
+      for (const row of block.rows) {
+        for (const cell of row.cells) walkRichText(cell.text, visitor);
+      }
+      break;
+    case "pageBlockDetails":
+      for (const child of block.blocks) walkPageBlock(child, visitor);
+      walkRichText(block.title, visitor);
+      break;
+    case "pageBlockRelatedArticles":
+      walkRichText(block.title, visitor);
+      break;
+    case "pageBlockBlockquoteBlocks":
+      for (const child of block.blocks) walkPageBlock(child, visitor);
+      walkRichText(block.caption, visitor);
+      break;
+    default:
+      assertNever$1();
+  }
+}
+function walkPageBlocks(blocks, visitor) {
+  for (const block of blocks) walkPageBlock(block, visitor);
+}
+
 class RawUpdateInfo {
   constructor(update, peers) {
     this.update = update;
@@ -70041,6 +72428,14 @@ function assertIsUpdatesGroup(ctx, upd) {
 const WARN_EVERY = 100;
 const KEEP_ALIVE_INTERVAL = 15 * 60 * 1e3;
 const UPDATES_TOO_LONG = { _: "updatesTooLong" };
+function collectRichMessagePeerIds(richMessage, peers) {
+  if (!richMessage) return;
+  walkPageBlocks(richMessage.blocks, {
+    richText: (text) => {
+      if (text._ === "textMentionName") peers.add(text.userId);
+    }
+  });
+}
 class UpdatesManager {
   constructor(client, params = {}) {
     this.client = client;
@@ -70113,6 +72508,9 @@ class UpdatesManager {
   cptsMod = /* @__PURE__ */ new Map();
   channelDiffTimeouts = /* @__PURE__ */ new Map();
   channelsOpened = /* @__PURE__ */ new Map();
+  // channels we got CHANNEL_PRIVATE for when fetching diff — skip gap handling.
+  // invalidated when an updateChannel for that channel arrives
+  inaccessibleChannels = /* @__PURE__ */ new Set();
   log;
   _onCatchingUp = () => {
   };
@@ -70134,6 +72532,7 @@ class UpdatesManager {
     this.stopLoop();
     this.cpts.clear();
     this.cptsMod.clear();
+    this.inaccessibleChannels.clear();
     this.pts = this.qts = this.date = this.seq = void 0;
   }
   async prepare() {
@@ -70509,11 +72908,19 @@ class UpdatesManager {
             return missing;
           }
           if (!await fetchPeer(msg.viaBotId)) return missing;
+          if (!await fetchPeer(msg.guestchatViaFrom)) return missing;
           if (msg.entities) {
             for (const ent of msg.entities) {
               if (ent._ === "messageEntityMentionName") {
                 if (!await fetchPeer(ent.userId)) return missing;
               }
+            }
+          }
+          if (msg.richMessage) {
+            const richMessagePeers = /* @__PURE__ */ new Set();
+            collectRichMessagePeerIds(msg.richMessage, richMessagePeers);
+            for (const peer of richMessagePeers) {
+              if (!await fetchPeer(peer)) return missing;
             }
           }
           if (msg.media) {
@@ -70557,12 +72964,31 @@ class UpdatesManager {
         }
         break;
       }
+      case "updateNewEphemeralMessage":
+      case "updateEditEphemeralMessage": {
+        const msg = upd.message;
+        if (!await fetchPeer(msg.peerId, true)) return missing;
+        if (!await fetchPeer(msg.fromId)) return missing;
+        if (!await fetchPeer(msg.receiverId)) return missing;
+        break;
+      }
+      case "updateEphemeralBotCallbackQuery":
+        if (!await fetchPeer(upd.peer, true)) return missing;
+        if (!await fetchPeer(upd.userId)) return missing;
+        break;
       case "updateDraftMessage":
         if ("entities" in upd.draft && upd.draft.entities) {
           for (const ent of upd.draft.entities) {
             if (ent._ === "messageEntityMentionName") {
               if (!await fetchPeer(ent.userId)) return missing;
             }
+          }
+        }
+        if ("richMessage" in upd.draft && upd.draft.richMessage) {
+          const richMessagePeers = /* @__PURE__ */ new Set();
+          collectRichMessagePeerIds(upd.draft.richMessage, richMessagePeers);
+          for (const peer of richMessagePeers) {
+            if (!await fetchPeer(peer)) return missing;
           }
         }
     }
@@ -70587,7 +73013,13 @@ class UpdatesManager {
     store(msg.fromId);
     if (msg._ === "message") {
       store(msg.viaBotId);
+      store(msg.guestchatViaFrom);
       store(msg.fwdFrom?.fromId);
+      if (msg.richMessage) {
+        const richMessagePeers = /* @__PURE__ */ new Set();
+        collectRichMessagePeerIds(msg.richMessage, richMessagePeers);
+        store([...richMessagePeers]);
+      }
       if (msg.media) {
         switch (msg.media._) {
           case "messageMediaWebPage":
@@ -70752,14 +73184,20 @@ class UpdatesManager {
         channelId,
         this._fetchChannelDifference(channelId, fallbackPts).catch((err) => {
           this.log.warn("error fetching difference for %d: %e", channelId, err);
-          if (RpcError.is("PERSISTENT_TIMESTAMP_INVALID")) {
+          if (RpcError.is(err, "PERSISTENT_TIMESTAMP_INVALID")) {
             this.log.warn("received PERSISTENT_TIMESTAMP_INVALID, resetting channel pts value");
+            this.cpts.delete(channelId);
+            this.cptsMod.delete(channelId);
+          }
+          if (RpcError.is(err, "CHANNEL_PRIVATE") || RpcError.is(err, "CHANNEL_INVALID")) {
+            this.log.debug("channel %d is inaccessible, skipping gap fills until updateChannel", channelId);
+            this.inaccessibleChannels.add(channelId);
             this.cpts.delete(channelId);
             this.cptsMod.delete(channelId);
           }
         }).then((ok) => {
           requestedDiff.delete(channelId);
-          if (!ok) {
+          if (!ok && !this.inaccessibleChannels.has(channelId)) {
             this.log.debug("channel difference for %d failed, falling back to common diff", channelId);
             this._fetchDifferenceLater(requestedDiff);
           }
@@ -70871,6 +73309,16 @@ class UpdatesManager {
       );
     }
   }
+  _consumeNoDispatch(pending) {
+    if (!this.noDispatchEnabled) return false;
+    const upd = pending.update;
+    const channelId = pending.channelId ?? 0;
+    const msgId = upd._ === "updateNewMessage" || upd._ === "updateNewChannelMessage" || upd._ === "updateBotNewBusinessMessage" ? upd.message.id : void 0;
+    const foundByMsgId = msgId ? this.noDispatchMsg.get(channelId)?.delete(msgId) : false;
+    const foundByPts = this.noDispatchPts.get(channelId)?.delete(pending.pts);
+    const foundByQts = this.noDispatchQts.delete(pending.qts);
+    return Boolean(foundByMsgId || foundByPts || foundByQts);
+  }
   async _onUpdate(pending, requestedDiff, postponed = false, unordered = false) {
     const { client, log } = this;
     const upd = pending.update;
@@ -70944,6 +73392,7 @@ class UpdatesManager {
         this.qts = pending.qts;
       }
     }
+    const inNoDispatchIndex = this._consumeNoDispatch(pending);
     if (isMessageEmpty(upd)) return;
     switch (upd._) {
       case "mtcute.dummyUpdate":
@@ -70957,6 +73406,13 @@ class UpdatesManager {
           }, config.expires * 1e3);
         } else {
           client.mt.network.config.update(true).catch((err) => client.onError.emit(unknownToError(err)));
+        }
+        break;
+      }
+      case "updateChannel": {
+        const channel = pending.peers.chats.get(upd.channelId);
+        if (!channel || channel._ !== "channelForbidden" && channel._ !== "communityForbidden") {
+          this.inaccessibleChannels.delete(upd.channelId);
         }
         break;
       }
@@ -71008,16 +73464,9 @@ class UpdatesManager {
         }
       }
     }
-    if (this.noDispatchEnabled) {
-      const channelId = pending.channelId ?? 0;
-      const msgId = upd._ === "updateNewMessage" || upd._ === "updateNewChannelMessage" || upd._ === "updateBotNewBusinessMessage" ? upd.message.id : void 0;
-      const foundByMsgId = msgId && this.noDispatchMsg.get(channelId)?.delete(msgId);
-      const foundByPts = this.noDispatchPts.get(channelId)?.delete(pending.pts);
-      const foundByQts = this.noDispatchQts.delete(pending.qts);
-      if (foundByMsgId || foundByPts || foundByQts) {
-        log.debug("not dispatching %s because it is in no_dispatch index", upd._);
-        return;
-      }
+    if (inNoDispatchIndex) {
+      log.debug("not dispatching %s because it is in no_dispatch index", upd._);
+      return;
     }
     log.debug("dispatching %s (postponed = %s)", upd._, postponed);
     if (upd._ === "updateNewMessage" && upd.message._ !== "messageEmpty") {
@@ -71277,7 +73726,8 @@ class UpdatesManager {
               );
               continue;
             }
-            if (diff < 0) {
+            const isInaccessibleChannel = pending.channelId && this.inaccessibleChannels.has(pending.channelId);
+            if (diff < 0 && !isInaccessibleChannel) {
               if (diff > -3) {
                 log.debug(
                   "postponing %s for 0.5s (cid = %d) because small gap detected (by pts: exp %d, got %d, diff=%d)",
@@ -71336,12 +73786,14 @@ class UpdatesManager {
           } else if (cpts.has(pending.channelId)) {
             localPts = cpts.get(pending.channelId);
           }
-          if (!localPts) {
+          if (localPts === void 0) {
             log.warn(
               "local pts not available for postponed %s (cid = %d), skipping",
               upd._,
               pending.channelId
             );
+            pendingPtsUpdatesPostponed.removeIndex(i);
+            i--;
             continue;
           }
           if (localPts > pending.ptsBefore) {
@@ -71367,6 +73819,7 @@ class UpdatesManager {
                 localPts,
                 pending.ptsBefore
               );
+              postponedTimer.emitBefore(pending.timeout);
             } else {
               log.debug(
                 "gap for postponed %s (cid = %d) wasn't filled, fetching diff (current pts %d, need %d)",
@@ -71444,6 +73897,8 @@ class UpdatesManager {
               this.qts,
               pending.qtsBefore
             );
+            pendingQtsUpdatesPostponed.removeIndex(i);
+            i--;
             continue;
           }
           if (this.qts < pending.qtsBefore) {
@@ -71456,6 +73911,7 @@ class UpdatesManager {
                 this.qts,
                 pending.qtsBefore
               );
+              postponedTimer.emitBefore(pending.timeout);
             } else {
               log.debug(
                 "gap for postponed %s wasn't filled, fetching diff (current qts %d, need %d)",
@@ -71959,50 +74415,6 @@ function memoizeGetters(cls, fields) {
     });
   }
   return cls;
-}
-
-const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
-function getAllGettersNames(obj) {
-  const getters = [];
-  do {
-    Object.getOwnPropertyNames(obj).forEach((prop) => {
-      if (prop !== "__proto__" && Object.getOwnPropertyDescriptor(obj, prop)?.get && !getters.includes(prop)) {
-        getters.push(prop);
-      }
-    });
-  } while (obj = Object.getPrototypeOf(obj));
-  return getters;
-}
-function makeInspectable(obj, props, hide) {
-  const getters = props || [];
-  for (const key of getAllGettersNames(obj.prototype)) {
-    if (!hide || !hide.includes(key)) getters.push(key);
-  }
-  const proto = { [obj.name]: class {
-  } }[obj.name].prototype;
-  obj.prototype.toJSON = function() {
-    const ret = Object.create(proto);
-    getters.forEach((it) => {
-      try {
-        let val = this[it];
-        if (val && typeof val === "object") {
-          if (val instanceof Uint8Array) {
-            val = encode$1(val);
-          } else if (Long.isLong(val)) {
-            val = val.toString();
-          } else if (typeof val.toJSON === "function") {
-            val = val.toJSON(true);
-          }
-        }
-        ret[it] = val;
-      } catch (e) {
-        ret[it] = `Error: ${e.message}`;
-      }
-    });
-    return ret;
-  };
-  obj.prototype[customInspectSymbol] = obj.prototype.toJSON;
-  return obj;
 }
 
 class MessageEntity {
@@ -72997,6 +75409,10 @@ class User {
   get isBusinessBot() {
     return this.raw.botBusiness;
   }
+  /** Whether this bot can approve join requests */
+  get isBotGuard() {
+    return this.raw.botGuard;
+  }
   /** Whether this user is a bot that has access to all messages */
   get isBotWithHistory() {
     return this.raw.botChatHistory;
@@ -73031,6 +75447,10 @@ class User {
   /** Whether this bot can manage other bots */
   get canBotManageBots() {
     return this.raw.botCanManageBots;
+  }
+  /** Whether this bot supports bot guest chats */
+  get isBotWithGuestChat() {
+    return this.raw.botGuestchat;
   }
   /** Whether this user has been verified by Telegram */
   get isVerified() {
@@ -73301,6 +75721,11 @@ class User {
   /** If this user has paid messages enabled, price of one message in stars */
   get paidMessagePrice() {
     return this.raw.sendPaidMessagesStars ?? null;
+  }
+  /** Marked ID of the community this user (bot) is linked to, if any */
+  get linkedCommunityId() {
+    if (!this.raw.linkedCommunityId) return null;
+    return toggleChannelIdMark(this.raw.linkedCommunityId);
   }
   /**
    * Create a mention for the user.
@@ -73696,7 +76121,9 @@ async function signInQr(client, params) {
           ]);
           break;
         case "auth.loginTokenMigrateTo": {
+          abortSignal?.throwIfAborted();
           await client.changePrimaryDc(res.dcId);
+          abortSignal?.throwIfAborted();
           let res2;
           try {
             res2 = await client.call(
@@ -73958,19 +76385,6 @@ async function startTest(client, params) {
   });
 }
 
-async function answerCallbackQuery(client, queryId, params) {
-  const { cacheTime = 0, text, alert, url } = params ?? {};
-  const r = await client.call({
-    _: "messages.setBotCallbackAnswer",
-    queryId: Long.isLong(queryId) ? queryId : queryId.id,
-    cacheTime,
-    alert,
-    message: text,
-    url
-  });
-  assertTrue("messages.setBotCallbackAnswer", r);
-}
-
 const FileType = FileType$1;
 const EMPTY_BUFFER = new Uint8Array(0);
 function dialogPhotoToInputPeer(dialog) {
@@ -74169,6 +76583,50 @@ function fileIdToInputPhoto(fileId) {
   };
 }
 
+function isUploadedFile(obj) {
+  return obj !== null && typeof obj === "object" && "inputFile" in obj && "size" in obj && "mime" in obj;
+}
+
+function inputTextToTl(text) {
+  return {
+    _: "textWithEntities",
+    text: typeof text === "string" ? text : text.text,
+    entities: typeof text === "string" ? [] : text.entities ?? []
+  };
+}
+
+function decodeWaveform(wf) {
+  const bitsCount = wf.length * 8;
+  const valuesCount = ~~(bitsCount / 5);
+  if (!valuesCount) return [];
+  const lastIdx = valuesCount - 1;
+  const result = [];
+  const dv = toDataView(wf);
+  for (let i = 0, j = 0; i < lastIdx; i++, j += 5) {
+    const byteIdx = ~~(j / 8);
+    const bitShift = j % 8;
+    result[i] = dv.getUint16(byteIdx, true) >> bitShift & 31;
+  }
+  const lastByteIdx = ~~(lastIdx * 5 / 8);
+  const lastBitShift = lastIdx * 5 % 8;
+  const lastValue = lastByteIdx === wf.length - 1 ? wf[lastByteIdx] : dv.getUint16(lastByteIdx, true);
+  result[lastIdx] = lastValue >> lastBitShift & 31;
+  return result;
+}
+function encodeWaveform(wf) {
+  const bitsCount = wf.length * 5;
+  const bytesCount = ~~((bitsCount + 7) / 8);
+  const result = alloc(bytesCount + 1);
+  const dv = toDataView(result);
+  for (let i = 0, j = 0; i < wf.length; i++, j += 5) {
+    const byteIdx = ~~(j / 8);
+    const bitShift = j % 8;
+    const value = (wf[i] & 31) << bitShift;
+    dv.setUint16(byteIdx, dv.getUint16(byteIdx, true) | value, true);
+  }
+  return result.slice(0, bytesCount);
+}
+
 function _normalizePeerId(peerId) {
   if (typeof peerId === "object") {
     if (isAnyPeer(peerId)) {
@@ -74347,7 +76805,17 @@ async function resolvePeer(client, peerId, force = false) {
           };
         }
       } catch (e) {
-        if (!RpcError.is(e, "CHANNEL_INVALID")) throw e;
+        if (RpcError.is(e, "COMMUNITY_ID_INVALID")) {
+          if (client.storage.self.getCached(true)?.isBot) {
+            return {
+              _: "inputPeerChannel",
+              channelId: bareId,
+              accessHash: Long.ZERO
+            };
+          }
+        } else if (!RpcError.is(e, "CHANNEL_INVALID")) {
+          throw e;
+        }
       }
       break;
     }
@@ -74413,6 +76881,990 @@ async function _normalizeInputText(client, input) {
     if (end > text.length) ent.length = text.length - ent.offset;
   }
   return [text, entities];
+}
+
+function guessFileMime(chunk) {
+  if (chunk.length < 12) return null;
+  const b0 = chunk[0];
+  const b1 = chunk[1];
+  if (b0 === 66 && b1 === 77) return "image/bmp";
+  if (b0 === 77 && b1 === 90) return "application/x-msdownload";
+  if (b0 === 31 && (b1 === 157 || b1 === 160)) return "application/x-compress";
+  if (b0 === 31 && b1 === 139) return "application/gzip";
+  const b2 = chunk[2];
+  if (b0 === 66 && b1 === 90 && b2 === 104) return "application/x-bzip2";
+  if (b0 === 73 && b1 === 68 && b2 === 51) return "audio/mpeg";
+  if (b0 === 255 && (b1 === 251 || b1 === 243 || b1 === 242)) return "audio/mpeg";
+  const b3 = chunk[3];
+  if (b0 === 80 && b1 === 75 && b2 === 3 && b3 === 4) return "application/zip";
+  if (b0 === 56 && b1 === 66 && b2 === 80 && b3 === 83) return "image/vnd.adobe.photoshop";
+  if (b0 === 127 && b1 === 69 && b2 === 76 && b3 === 70) return "application/x-elf";
+  if (b0 === 254 && b1 === 237 && b2 === 250 && b3 === 207) return "application/x-mach-binary";
+  if (b0 === 40 && b1 === 181 && b2 === 47 && b3 === 253) return "application/zstd";
+  if (b0 === 102 && b1 === 76 && b2 === 97 && b3 === 67) return "audio/x-flac";
+  if (b0 === 255 && b1 === 216 && b2 === 255 && (b3 === 219 || b3 === 224 || b3 === 238 || b3 === 225)) {
+    return "image/jpeg";
+  }
+  if (b0 === 79 && b1 === 103 && b2 === 103 && b3 === 83) {
+    if (chunk.length > 36) {
+      const type = String.fromCharCode(...chunk.subarray(28, 36));
+      if (type === "OpusHead") return "audio/ogg";
+      if (type.startsWith("theora")) return "video/ogg";
+      if (type.startsWith("video")) return "video/ogg";
+      if (type.startsWith("FLAC")) return "audio/ogg";
+      if (type.startsWith("Speex  ")) return "audio/ogg";
+      if (type.startsWith("vorbis")) return "audio/ogg";
+    }
+    return "application/ogg";
+  }
+  const b4 = chunk[4];
+  if (b0 === 37 && b1 === 80 && b2 === 68 && b3 === 70 && b4 === 45) return "application/pdf";
+  const b5 = chunk[5];
+  if (b0 === 71 && b1 === 73 && b2 === 70 && b3 === 56) {
+    if ((b4 === 55 || b4 === 57) && b5 === 97) return "image/gif";
+  }
+  if (b0 === 55 && b1 === 122 && b2 === 188 && b3 === 175 && b4 === 39 && b5 === 28) {
+    return "application/x-7z-compressed";
+  }
+  const b6 = chunk[6];
+  const b7 = chunk[7];
+  if (b0 === 137 && b1 === 80 && b2 === 78 && b3 === 71 && b4 === 13 && b5 === 10 && b6 === 26 && b7 === 10) {
+    return "image/png";
+  }
+  if (b0 === 82 && b1 === 97 && b2 === 114 && b3 === 33 && b4 === 26 && b5 === 7) {
+    if (b6 === 0 || b6 === 1) return "application/x-rar-compressed";
+  }
+  if (b4 === 102 && b5 === 116 && b6 === 121 && b7 === 112 && chunk[8] & 96) {
+    const brandMajor = String.fromCharCode(...chunk.subarray(8, 12)).replace(/\0/g, " ").trim();
+    switch (brandMajor) {
+      case "avif":
+      case "avis":
+        return "image/avif";
+      case "mif1":
+        return "image/heif";
+      case "msf1":
+        return "image/heif-sequence";
+      case "heic":
+      case "heix":
+        return "image/heic";
+      case "hevc":
+      case "hevx":
+        return "image/heic-sequence";
+      case "qt":
+        return "video/quicktime";
+      case "M4V":
+      case "M4VH":
+      case "M4VP":
+        return "video/x-m4v";
+      case "M4A":
+        return "audio/x-m4a";
+      case "M4B":
+      case "F4A":
+      case "F4B":
+        return "audio/mp4";
+      case "crx":
+        return "image/x-canon-cr3";
+      default:
+        if (brandMajor.startsWith("3g")) {
+          if (brandMajor.startsWith("3g2")) {
+            return "video/3gpp2";
+          }
+          return "video/3gpp";
+        }
+        return "video/mp4";
+    }
+  }
+  return null;
+}
+const MIME_TO_EXTENSION = {
+  "image/bmp": "bmp",
+  "application/x-msdownload": "exe",
+  "application/x-compress": "z",
+  "application/gzip": "gz",
+  "application/x-bzip2": "bz2",
+  "audio/mpeg": "mp3",
+  "application/zip": "zip",
+  "image/vnd.adobe.photoshop": "psd",
+  "application/zstd": "zst",
+  "audio/x-flac": "flac",
+  "image/jpeg": "jpg",
+  "audio/ogg": "ogg",
+  "video/ogg": "ogv",
+  "application/ogg": "ogg",
+  "application/pdf": "pdf",
+  "image/gif": "gif",
+  "application/x-7z-compressed": "7z",
+  "image/png": "png",
+  "application/x-rar-compressed": "rar",
+  "image/avif": "avif",
+  "image/heif": "heif",
+  "image/heif-sequence": "heif",
+  "image/heic": "heic",
+  "image/heic-sequence": "heic",
+  "video/quicktime": "mov",
+  "video/x-m4v": "m4v",
+  "audio/x-m4a": "m4a",
+  "audio/mp4": "m4a",
+  "image/x-canon-cr3": "cr3",
+  "video/3gpp2": "3g2",
+  "video/3gpp": "3gp",
+  "video/mp4": "mp4"
+};
+
+const OVERRIDE_MIME = {
+  // tg doesn't interpret `audio/opus` files as voice messages for some reason
+  "audio/opus": "audio/ogg"
+};
+const SMALL_FILE_MAX_SIZE$1 = 131072;
+const BIG_FILE_MIN_SIZE = 10485760;
+const DEFAULT_FILE_NAME = "unnamed";
+const REQUESTS_PER_CONNECTION$1 = 3;
+const MAX_PART_COUNT = 4e3;
+const MAX_PART_COUNT_PREMIUM = 8e3;
+const HAS_FILE = typeof File !== "undefined";
+const HAS_RESPONSE = typeof Response !== "undefined";
+const HAS_URL = typeof URL !== "undefined";
+const HAS_BLOB = typeof Blob !== "undefined";
+async function uploadFile(client, params) {
+  let file = params.file;
+  let fileSize = -1;
+  let fileName = params.fileName;
+  let fileMime = params.fileMime;
+  const abortSignal = params.abortSignal;
+  if (client.platform.normalizeFile) {
+    const res = await client.platform.normalizeFile(file);
+    if (res?.file) {
+      file = res.file;
+      if (res.fileSize) fileSize = res.fileSize;
+      if (res.fileName) fileName = res.fileName;
+    }
+  }
+  if (ArrayBuffer.isView(file)) {
+    fileSize = file.length;
+    file = Bytes.from(file);
+  }
+  if (HAS_FILE && file instanceof File) {
+    fileName = file.name;
+    fileSize = file.size;
+    fileMime = file.type;
+    file = file.stream();
+  }
+  if (HAS_URL && file instanceof URL) {
+    file = await fetch(file);
+  }
+  if (HAS_BLOB && file instanceof Blob) {
+    fileSize = file.size;
+    file = file.stream();
+  }
+  if (HAS_RESPONSE && file instanceof Response) {
+    const length = Number.parseInt(file.headers.get("content-length") || "0");
+    if (!Number.isNaN(length) && length) fileSize = length;
+    fileMime = file.headers.get("content-type")?.split(";")[0];
+    const disposition = file.headers.get("content-disposition");
+    if (disposition) {
+      const idx2 = disposition.indexOf("filename=");
+      if (idx2 > -1) {
+        const raw = disposition.slice(idx2 + 9).split(";")[0];
+        fileName = JSON.parse(raw);
+      }
+    }
+    if (fileName === DEFAULT_FILE_NAME) {
+      const url = new URL(file.url);
+      const name = url.pathname.split("/").pop();
+      if (name && name.includes(".")) {
+        fileName = name;
+      }
+    }
+    if (!file.body) {
+      throw new MtArgumentError("Fetch response contains `null` body");
+    }
+    file = file.body;
+  }
+  if (file instanceof ReadableStream) {
+    file = webReadableToFuman(file);
+  } else if (!(typeof file === "object" && "read" in file)) {
+    throw new MtArgumentError("Could not convert input `file` to stream!");
+  }
+  let readable = file;
+  if (fileSize === -1 && params.fileSize) fileSize = params.fileSize;
+  if (fileSize === -1 && params.requireFileSize) {
+    const buffer = await untilEnd(readable);
+    fileSize = buffer.length;
+    readable = Bytes.from(buffer);
+  }
+  let partSizeKb = params.partSize;
+  if (!partSizeKb) {
+    if (fileSize === -1) {
+      partSizeKb = params.estimatedSize ? determinePartSize(params.estimatedSize, true) : 64;
+    } else {
+      partSizeKb = determinePartSize(fileSize, true);
+    }
+  }
+  if (partSizeKb > 512) {
+    throw new MtArgumentError(`Invalid part size: ${partSizeKb}KB`);
+  }
+  const partSize = partSizeKb * 1024;
+  let partCount = fileSize === -1 ? -1 : ~~((fileSize + partSize - 1) / partSize);
+  const maxPartCount = client.storage.self.getCached()?.isPremium ? MAX_PART_COUNT_PREMIUM : MAX_PART_COUNT;
+  if (partCount > maxPartCount) {
+    throw new MtArgumentError(`File is too large (max ${maxPartCount} parts, got ${partCount})`);
+  }
+  const isBig = fileSize === -1 || fileSize > BIG_FILE_MIN_SIZE;
+  const isSmall = fileSize !== -1 && fileSize < SMALL_FILE_MAX_SIZE$1;
+  const connectionKind = isSmall ? "main" : "upload";
+  const connectionPoolSize = Math.min(await client.getPoolSize(connectionKind), partCount);
+  const requestsPerConnection = params.requestsPerConnection ?? REQUESTS_PER_CONNECTION$1;
+  client.log.debug(
+    "uploading %d bytes file in %d chunks, each %d bytes in %s connection pool of size %d",
+    fileSize,
+    partCount,
+    partSize,
+    connectionKind,
+    connectionPoolSize
+  );
+  const fileId = randomLong();
+  const lock = new AsyncLock();
+  let pos = 0;
+  let idx = 0;
+  let readableEnded = false;
+  const uploadNextPart = async () => {
+    if (abortSignal?.aborted) return;
+    const thisIdx = idx++;
+    await lock.acquire();
+    if (readableEnded) {
+      lock.release();
+      return;
+    }
+    let part;
+    try {
+      part = await exactly$1(readable, partSize, "truncate");
+    } finally {
+      lock.release();
+    }
+    if (abortSignal?.aborted) return;
+    const ended = part.length < partSize;
+    if (ended) {
+      readableEnded = true;
+      if (fileSize === -1) {
+        fileSize = pos + part.length;
+        partCount = ~~((fileSize + partSize - 1) / partSize);
+      } else if (thisIdx !== partCount - 1) {
+        throw new MtArgumentError(`Unexpected EOS (there were only ${idx} parts, but expected ${partCount})`);
+      }
+      client.log.debug("readable ended, file size = %d, part count = %d", fileSize, partCount);
+    }
+    if (thisIdx === 0 && fileMime === void 0) {
+      const mime = guessFileMime(part);
+      if (mime) {
+        fileMime = mime;
+      } else {
+        const isPlainText = isProbablyPlainText(part.slice(0, 8));
+        fileMime = isPlainText ? "text/plain" : "application/octet-stream";
+      }
+    }
+    const request = isBig ? {
+      _: "upload.saveBigFilePart",
+      fileId,
+      filePart: thisIdx,
+      fileTotalParts: partCount,
+      bytes: part
+    } : {
+      _: "upload.saveFilePart",
+      fileId,
+      filePart: thisIdx,
+      bytes: part
+    };
+    const result = await client.call(request, {
+      kind: connectionKind,
+      maxRetryCount: Infinity,
+      floodSleepThreshold: Infinity,
+      abortSignal
+    });
+    if (!result) throw new Error(`Failed to upload part ${idx}`);
+    if (abortSignal?.aborted) return;
+    pos += part.length;
+    params.progressCallback?.(pos, fileSize);
+    if (idx === partCount) return;
+    return uploadNextPart();
+  };
+  let poolSize = partCount === -1 ? 1 : connectionPoolSize * requestsPerConnection;
+  if (partCount !== -1 && poolSize > partCount) poolSize = partCount;
+  await Promise.all(Array.from({ length: poolSize }, uploadNextPart));
+  abortSignal?.throwIfAborted();
+  if (fileName === void 0) {
+    const ext = MIME_TO_EXTENSION[fileMime];
+    fileName = ext ? `${DEFAULT_FILE_NAME}.${ext}` : DEFAULT_FILE_NAME;
+  } else if (params.requireExtension) {
+    const extFromMime = MIME_TO_EXTENSION[fileMime];
+    const idx2 = fileName.lastIndexOf(".");
+    const extFromName = idx2 === -1 ? void 0 : fileName.slice(idx2 + 1);
+    if (!extFromName) {
+      if (!extFromMime) {
+        throw new MtArgumentError(`File name does not have an extension, and we cannot guess it from the mime type (${fileMime})`);
+      }
+      fileName = `${fileName}.${extFromMime}`;
+    }
+  }
+  let inputFile;
+  if (isBig) {
+    inputFile = {
+      _: "inputFileBig",
+      id: fileId,
+      parts: partCount,
+      name: fileName
+    };
+  } else {
+    inputFile = {
+      _: "inputFile",
+      id: fileId,
+      parts: partCount,
+      name: fileName,
+      md5Checksum: ""
+      // tdlib doesn't do this, why should we?
+    };
+  }
+  if (fileMime in OVERRIDE_MIME) fileMime = OVERRIDE_MIME[fileMime];
+  return {
+    inputFile,
+    size: fileSize,
+    mime: fileMime
+  };
+}
+
+async function _normalizeInputFile(client, input, params) {
+  if (typeof input === "object" && isAnyInputMedia(input)) {
+    throw new MtArgumentError("InputFile can't be created from an InputMedia");
+  } else if (isFileIdLike(input)) {
+    if (typeof input === "string" && input.match(/^file:/)) {
+      const uploaded = await uploadFile(client, {
+        file: input.substring(5),
+        ...params
+      });
+      return uploaded.inputFile;
+    }
+    throw new MtArgumentError("InputFile can't be created from an URL or a File ID");
+  } else if (isUploadedFile(input)) {
+    return input.inputFile;
+  } else if (typeof input === "object" && isAnyInputFile(input)) {
+    return input;
+  } else {
+    const uploaded = await uploadFile(client, {
+      file: input,
+      ...params
+    });
+    return uploaded.inputFile;
+  }
+}
+
+async function _normalizeInputMedia(client, media, params = {}, uploadMedia = false) {
+  if (isAnyInputMedia(media)) {
+    switch (media._) {
+      case "inputMediaStory":
+        return {
+          ...media,
+          peer: await resolvePeer(client, media.peer)
+        };
+    }
+    return media;
+  }
+  if (isAnyInputPhoto(media)) {
+    assertTypeIs("normalizeInputMedia (@ photo)", media, "inputPhoto");
+    return { _: "inputMediaPhoto", id: media };
+  }
+  if (isAnyInputDocument(media)) {
+    assertTypeIs("normalizeInputMedia (@ document)", media, "inputDocument");
+    return { _: "inputMediaDocument", id: media };
+  }
+  if (media.type === "venue") {
+    return {
+      _: "inputMediaVenue",
+      geoPoint: {
+        _: "inputGeoPoint",
+        lat: media.latitude,
+        long: media.longitude
+      },
+      title: media.title,
+      address: media.address,
+      provider: media.source?.provider ?? "",
+      venueId: media.source?.id ?? "",
+      venueType: media.source?.type ?? ""
+    };
+  }
+  if (media.type === "geo") {
+    return {
+      _: "inputMediaGeoPoint",
+      geoPoint: {
+        _: "inputGeoPoint",
+        lat: media.latitude,
+        long: media.longitude
+      }
+    };
+  }
+  if (media.type === "geo_live") {
+    return {
+      _: "inputMediaGeoLive",
+      geoPoint: {
+        _: "inputGeoPoint",
+        lat: media.latitude,
+        long: media.longitude
+      },
+      stopped: media.stopped,
+      heading: media.heading,
+      period: media.period,
+      proximityNotificationRadius: media.proximityNotificationRadius
+    };
+  }
+  if (media.type === "dice") {
+    return {
+      _: "inputMediaDice",
+      emoticon: media.emoji
+    };
+  }
+  if (media.type === "contact") {
+    return {
+      _: "inputMediaContact",
+      phoneNumber: media.phone,
+      firstName: media.firstName,
+      lastName: media.lastName ?? "",
+      vcard: media.vcard ?? ""
+    };
+  }
+  if (media.type === "game") {
+    return {
+      _: "inputMediaGame",
+      id: typeof media.game === "string" ? {
+        _: "inputGameShortName",
+        botId: { _: "inputUserSelf" },
+        shortName: media.game
+      } : media.game
+    };
+  }
+  if (media.type === "invoice") {
+    return {
+      _: "inputMediaInvoice",
+      title: media.title,
+      description: media.description,
+      photo: typeof media.photo === "string" ? {
+        _: "inputWebDocument",
+        url: media.photo,
+        mimeType: "image/jpeg",
+        size: 0,
+        attributes: []
+      } : media.photo,
+      invoice: media.invoice,
+      payload: media.payload,
+      provider: media.token,
+      providerData: {
+        _: "dataJSON",
+        data: JSON.stringify(media.providerData)
+      },
+      startParam: media.startParam,
+      extendedMedia: media.extendedMedia ? await _normalizeInputMedia(client, media.extendedMedia, params) : void 0
+    };
+  }
+  if (media.type === "poll" || media.type === "quiz") {
+    const answers = await Promise.all(media.answers.map((ans) => {
+      if (typeof ans === "string") return { _: "inputPollAnswer", text: inputTextToTl(ans) };
+      if (isAnyPollAnswer(ans)) return ans;
+      if ("media" in ans && ans.media) {
+        return _normalizeInputMedia(client, ans.media, params, true).then((m) => ({
+          _: "inputPollAnswer",
+          text: inputTextToTl(ans.text),
+          media: m
+        }));
+      }
+      return {
+        _: "inputPollAnswer",
+        text: inputTextToTl(ans.text)
+      };
+    }));
+    let correct;
+    let solution;
+    let solutionEntities;
+    const [attachedMedia, solutionMedia] = await Promise.all([
+      media.attachedMedia ? _normalizeInputMedia(client, media.attachedMedia, params, true) : void 0,
+      media.type === "quiz" && media.solutionMedia ? _normalizeInputMedia(client, media.solutionMedia, params, true) : void 0
+    ]);
+    if (media.type === "quiz") {
+      let input2 = media.correct;
+      if (!Array.isArray(input2)) input2 = [input2];
+      correct = input2;
+      if (media.solution) {
+        [solution, solutionEntities] = await _normalizeInputText(client, media.solution);
+      }
+    }
+    return {
+      _: "inputMediaPoll",
+      attachedMedia,
+      solutionMedia,
+      poll: {
+        _: "poll",
+        closed: media.closed,
+        id: Long.ZERO,
+        publicVoters: media.public,
+        multipleChoice: media.multiple,
+        quiz: media.type === "quiz",
+        question: inputTextToTl(media.question),
+        answers,
+        closePeriod: media.closePeriod,
+        closeDate: normalizeDate(media.closeDate),
+        openAnswers: media.openAnswers,
+        revotingDisabled: media.disableRevoting,
+        shuffleAnswers: media.shuffleAnswers,
+        hideResultsUntilClose: media.hideResultsUntilClose,
+        hash: Long.ZERO
+      },
+      correctAnswers: correct,
+      solution,
+      solutionEntities
+    };
+  }
+  if (media.type === "story") {
+    return {
+      _: "inputMediaStory",
+      peer: await resolvePeer(client, media.peer),
+      id: media.id
+    };
+  }
+  if (media.type === "webpage") {
+    return {
+      _: "inputMediaWebPage",
+      forceLargeMedia: media.size === "large",
+      forceSmallMedia: media.size === "small",
+      optional: !media.required,
+      url: media.url
+    };
+  }
+  if (media.type === "paid") {
+    let medias;
+    if (Array.isArray(media.media)) {
+      medias = await Promise.all(media.media.map((m) => _normalizeInputMedia(client, m, params)));
+    } else {
+      medias = [await _normalizeInputMedia(client, media.media, params)];
+    }
+    return {
+      _: "inputMediaPaidMedia",
+      starsAmount: Long.isLong(media.starsAmount) ? media.starsAmount : Long.fromNumber(media.starsAmount),
+      extendedMedia: medias,
+      payload: media.payload
+    };
+  }
+  if (media.type === "todo") {
+    return {
+      _: "inputMediaTodo",
+      todo: {
+        _: "todoList",
+        othersCanAppend: media.othersCanAppend,
+        othersCanComplete: media.othersCanComplete,
+        title: inputTextToTl(media.title),
+        list: media.items.map((it, idx) => ({
+          _: "todoItem",
+          id: idx,
+          title: inputTextToTl(it)
+        }))
+      }
+    };
+  }
+  let inputFile;
+  let thumb;
+  let mime = "application/octet-stream";
+  const upload = async (file) => {
+    let sendMime;
+    if (media.type === "sticker") {
+      sendMime = media.isAnimated ? "application/x-tgsticker" : "image/webp";
+    } else {
+      sendMime = media.fileMime;
+    }
+    const uploaded = await uploadFile(client, {
+      file,
+      progressCallback: params.progressCallback,
+      fileName: media.fileName,
+      fileMime: sendMime,
+      fileSize: media.fileSize,
+      requireFileSize: media.type === "photo",
+      requireExtension: media.type === "photo",
+      abortSignal: params.abortSignal
+    });
+    inputFile = uploaded.inputFile;
+    mime = uploaded.mime;
+  };
+  let videoCover;
+  if (media.type === "video" && media.cover) {
+    const inputMedia = await _normalizeInputMedia(client, media.cover, params);
+    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaPhoto");
+    videoCover = inputMedia.id;
+  }
+  let livePhotoVideo;
+  if (media.type === "photo" && media.livePhotoVideo) {
+    const inputMedia = await _normalizeInputMedia(client, media.livePhotoVideo, params, true);
+    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaDocument");
+    livePhotoVideo = inputMedia.id;
+  }
+  const uploadPeer = params.uploadPeer ?? { _: "inputPeerSelf" };
+  const uploadMediaIfNeeded = async (inputMedia, photo) => {
+    if (!uploadMedia) return inputMedia;
+    const res = await client.call({
+      _: "messages.uploadMedia",
+      peer: uploadPeer,
+      media: inputMedia,
+      businessConnectionId: params.businessConnectionId
+    }, { abortSignal: params.abortSignal });
+    if (photo) {
+      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaPhoto");
+      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.photo, "photo");
+      return {
+        _: "inputMediaPhoto",
+        id: {
+          _: "inputPhoto",
+          id: res.photo.id,
+          accessHash: res.photo.accessHash,
+          fileReference: res.photo.fileReference
+        },
+        ttlSeconds: media.ttlSeconds,
+        spoiler: "spoiler" in media ? media.spoiler : false,
+        livePhoto: Boolean(livePhotoVideo),
+        video: livePhotoVideo
+      };
+    }
+    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaDocument");
+    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.document, "document");
+    return {
+      _: "inputMediaDocument",
+      id: {
+        _: "inputDocument",
+        id: res.document.id,
+        accessHash: res.document.accessHash,
+        fileReference: res.document.fileReference
+      },
+      ttlSeconds: media.ttlSeconds,
+      spoiler: media.type === "video" && media.spoiler,
+      videoCover,
+      videoTimestamp: media.type === "video" ? media.timestamp : void 0
+    };
+  };
+  const input = media.file;
+  if (isFileIdLike(input)) {
+    const spoiler = (media.type === "video" || media.type === "photo") && media.spoiler;
+    if (typeof input === "string" && input.match(/^https?:\/\//)) {
+      return uploadMediaIfNeeded(
+        {
+          _: media.type === "photo" ? "inputMediaPhotoExternal" : "inputMediaDocumentExternal",
+          url: input,
+          ttlSeconds: media.ttlSeconds,
+          spoiler
+        },
+        media.type === "photo"
+      );
+    } else if (typeof input === "string" && input.match(/^file:/)) {
+      await upload(input.substring(5));
+    } else {
+      const parsed = typeof input === "string" ? parseFileId(input) : input;
+      if (parsed.location._ === "photo") {
+        return {
+          _: "inputMediaPhoto",
+          id: fileIdToInputPhoto(parsed),
+          ttlSeconds: media.ttlSeconds,
+          spoiler
+        };
+      } else if (parsed.location._ === "web") {
+        return uploadMediaIfNeeded(
+          {
+            _: parsed.type === FileType$1.Photo ? "inputMediaPhotoExternal" : "inputMediaDocumentExternal",
+            url: parsed.location.url,
+            ttlSeconds: media.ttlSeconds,
+            spoiler
+          },
+          parsed.type === FileType$1.Photo
+        );
+      }
+      return {
+        _: "inputMediaDocument",
+        id: fileIdToInputDocument(parsed),
+        ttlSeconds: media.ttlSeconds,
+        spoiler
+      };
+    }
+  } else if (typeof input === "object" && isAnyInputMedia(input)) {
+    return input;
+  } else if (isUploadedFile(input)) {
+    inputFile = input.inputFile;
+    mime = input.mime;
+  } else if (typeof input === "object" && isAnyInputFile(input)) {
+    inputFile = input;
+  } else {
+    await upload(input);
+  }
+  if (!inputFile) throw new Error("should not happen");
+  if (media.type === "photo") {
+    return uploadMediaIfNeeded(
+      {
+        _: "inputMediaUploadedPhoto",
+        file: inputFile,
+        livePhoto: Boolean(livePhotoVideo),
+        video: livePhotoVideo,
+        ttlSeconds: media.ttlSeconds,
+        spoiler: media.spoiler
+      },
+      true
+    );
+  }
+  if ("thumb" in media && media.thumb) {
+    thumb = await _normalizeInputFile(client, media.thumb, { abortSignal: params.abortSignal });
+  }
+  const attributes = [];
+  if (media.type !== "voice") {
+    attributes.push({
+      _: "documentAttributeFilename",
+      fileName: media.fileName || (inputFile._ === "inputFileStoryDocument" ? "story" : inputFile.name)
+    });
+  }
+  if (media.type === "video") {
+    const attr = {
+      _: "documentAttributeVideo",
+      duration: media.duration || 0,
+      w: media.width || 0,
+      h: media.height || 0,
+      supportsStreaming: media.supportsStreaming,
+      roundMessage: media.isRound
+    };
+    if (media.isRound) {
+      if (attr.w === 0) attr.w = 1;
+      if (attr.h === 0) attr.h = 1;
+      if (attr.duration === 0) attr.duration = 1;
+    }
+    attributes.push(attr);
+    if (media.isAnimated) {
+      attributes.push({ _: "documentAttributeAnimated" });
+    }
+  }
+  if (media.type === "audio" || media.type === "voice") {
+    attributes.push({
+      _: "documentAttributeAudio",
+      voice: media.type === "voice",
+      duration: media.duration || 0,
+      title: media.type === "audio" ? media.title : void 0,
+      performer: media.type === "audio" ? media.performer : void 0,
+      waveform: media.type === "voice" && media.waveform ? encodeWaveform(media.waveform) : void 0
+    });
+  }
+  if (media.type === "sticker") {
+    attributes.push({
+      _: "documentAttributeSticker",
+      stickerset: {
+        _: "inputStickerSetEmpty"
+      },
+      alt: media.alt ?? ""
+    });
+  }
+  return uploadMediaIfNeeded(
+    {
+      _: "inputMediaUploadedDocument",
+      nosoundVideo: media.type === "video" && !media.isAnimated,
+      forceFile: media.type === "document",
+      file: inputFile,
+      thumb,
+      mimeType: mime,
+      attributes,
+      ttlSeconds: media.ttlSeconds,
+      spoiler: media.type === "video" && media.spoiler,
+      videoTimestamp: media.type === "video" ? media.timestamp : void 0,
+      videoCover
+    },
+    false
+  );
+}
+
+async function resolvePeerMany(client, peerIds, normalizer) {
+  const ret = [];
+  const limit = 8;
+  if (peerIds.length < limit) {
+    const res = await Promise.all(
+      peerIds.map(
+        (it) => resolvePeer(client, it).catch((e) => {
+          if (e instanceof MtPeerNotFoundError) {
+            return null;
+          }
+          throw e;
+        })
+      )
+    );
+    if (!normalizer) return res;
+    for (const value of res) {
+      if (!value) continue;
+      const norm = normalizer(value);
+      if (norm) {
+        ret.push(norm);
+      }
+    }
+    return ret;
+  }
+  return parallelMap(peerIds, async (it) => {
+    let peer;
+    try {
+      peer = await resolvePeer(client, it);
+    } catch (e) {
+      if (e instanceof MtPeerNotFoundError) {
+        return null;
+      }
+      throw e;
+    }
+    if (normalizer) return normalizer(peer);
+    return peer;
+  }, { limit });
+}
+
+function _richMediaCacheKey(media) {
+  if (typeof media === "string") return `auto:${media}`;
+  if ("_" in media) return void 0;
+  if (typeof media.file === "string") return `${media.type}:${media.file}`;
+  return media;
+}
+async function _uploadRichMedia(client, peer, id, media, params) {
+  const cacheKey = params.uploadCache != null ? _richMediaCacheKey(media) : void 0;
+  if (cacheKey !== void 0) {
+    const cached = params.uploadCache.get(cacheKey);
+    if (cached != null) return cached;
+  }
+  const input = typeof media === "string" ? { type: "auto", file: media } : media;
+  const normalized = await _normalizeInputMedia(client, input, {
+    uploadPeer: peer,
+    abortSignal: params.abortSignal,
+    progressCallback: params.progressCallback?.bind(null, id)
+  }, true);
+  if (normalized._ !== "inputMediaPhoto" && normalized._ !== "inputMediaDocument") {
+    throw new MtTypeAssertionError("sendRichMessage (upload)", "inputMediaDocument | inputMediaPhoto", normalized._);
+  }
+  if (cacheKey !== void 0) params.uploadCache.set(cacheKey, normalized);
+  return normalized;
+}
+async function _normalizeInputRichMessage(client, peer, input, params) {
+  if ("_" in input) return input;
+  if (input.type !== "blocks") {
+    let richFiles;
+    if (input.attachments) {
+      const medias = [...Object.entries(input.attachments)];
+      const normalized = await parallelMap(
+        medias,
+        async ([id, media]) => [id, await _uploadRichMedia(client, peer, id, media, params)],
+        { limit: 4, signal: params.abortSignal }
+      );
+      richFiles = normalized.map(
+        ([id, media]) => media._ === "inputMediaDocument" ? { _: "inputRichFileDocument", id, document: media.id } : { _: "inputRichFilePhoto", id, photo: media.id }
+      );
+    }
+    return input.type === "markdown" ? {
+      _: "inputRichMessageMarkdown",
+      rtl: input.rtl,
+      noautolink: input.skipEntityDetection,
+      files: richFiles,
+      markdown: input.content
+    } : {
+      _: "inputRichMessageHTML",
+      rtl: input.rtl,
+      noautolink: input.skipEntityDetection,
+      files: richFiles,
+      html: input.content
+    };
+  }
+  const photos = [];
+  const documents = [];
+  const fileBlocks = [];
+  function processBlock(node) {
+    if ("file" in node) {
+      const block = processBlock(node.block);
+      fileBlocks.push({ block, media: node.file });
+      return block;
+    }
+    switch (node._) {
+      case "pageBlockCover":
+        return { ...node, cover: processBlock(node.cover) };
+      case "pageBlockCollage":
+      case "pageBlockSlideshow":
+        return { ...node, items: node.items.map(processBlock) };
+      case "pageBlockDetails":
+      case "pageBlockEmbedPost":
+      case "pageBlockBlockquoteBlocks":
+        return { ...node, blocks: node.blocks.map(processBlock) };
+      case "pageBlockList":
+        return {
+          ...node,
+          items: node.items.map(
+            (item) => item._ === "pageListItemBlocks" ? {
+              ...item,
+              blocks: item.blocks.map(processBlock)
+            } : item
+          )
+        };
+      case "pageBlockOrderedList":
+        return {
+          ...node,
+          items: node.items.map(
+            (item) => item._ === "pageListOrderedItemBlocks" ? { ...item, blocks: item.blocks.map(processBlock) } : item
+          )
+        };
+      default:
+        return node;
+    }
+  }
+  const blocks = input.blocks.map(processBlock);
+  const mentionIds = /* @__PURE__ */ new Set();
+  walkPageBlocks(blocks, {
+    richText: (text) => {
+      if (text._ === "textMentionName") mentionIds.add(text.userId);
+    }
+  });
+  const users = mentionIds.size ? await resolvePeerMany(client, [...mentionIds], toInputUser) : void 0;
+  const uploaded = await parallelMap(
+    fileBlocks,
+    async ({ block, media }, idx) => {
+      const uploaded2 = await _uploadRichMedia(client, peer, `block-${idx}`, media, params);
+      return { block, media: uploaded2 };
+    },
+    { limit: 4, signal: params.abortSignal }
+  );
+  for (const { block, media } of uploaded) {
+    if (media._ === "inputMediaPhoto") {
+      const photo = media.id;
+      assertTypeIs("sendRichMessage (upload)", photo, "inputPhoto");
+      photos.push(photo);
+      switch (block._) {
+        case "pageBlockPhoto":
+          block.photoId = photo.id;
+          break;
+        case "pageBlockEmbed":
+          block.posterPhotoId = photo.id;
+          break;
+        case "pageBlockEmbedPost":
+          block.authorPhotoId = photo.id;
+          break;
+        default:
+          throw new MtArgumentError(`sendRichMessage: expected photo ${photo.id} to be used in a photo block, but got ${block._}`);
+      }
+    } else {
+      const document = media.id;
+      assertTypeIs("sendRichMessage (upload)", document, "inputDocument");
+      documents.push(document);
+      switch (block._) {
+        case "pageBlockVideo":
+          block.videoId = document.id;
+          break;
+        case "pageBlockAudio":
+          block.audioId = document.id;
+          break;
+        default:
+          throw new MtArgumentError(`sendRichMessage: expected document ${document.id} to be used in a document block, but got ${block._}`);
+      }
+    }
+  }
+  return {
+    _: "inputRichMessage",
+    rtl: input.rtl,
+    noautolink: input.skipEntityDetection,
+    blocks,
+    photos: photos.length ? photos : void 0,
+    documents: documents.length ? documents : void 0,
+    users: users?.length ? users : void 0
+  };
 }
 
 function _rowsTo2d(rows) {
@@ -74482,6 +77934,12 @@ async function _convertToTl$1(client, obj) {
         invertMedia: obj.invertMedia
       };
     }
+    case "rich":
+      return {
+        _: "inputBotInlineMessageRichMessage",
+        replyMarkup: _convertToTl$2(obj.replyMarkup),
+        richMessage: "_" in obj.content ? obj.content : await _normalizeInputRichMessage(client, { _: "inputPeerEmpty" }, obj.content, {})
+      };
     case "media": {
       const [message, entities] = await _normalizeInputText(client, obj.text);
       return {
@@ -74829,6 +78287,36 @@ ${obj.description}`;
     });
   }
   return [isGallery && !forceVertical, items];
+}
+
+async function answerBotGuestChatQuery(client, queryId, result) {
+  if (!("id" in result)) {
+    result = {
+      type: "article",
+      id: "guest",
+      title: "guest",
+      message: result
+    };
+  }
+  const [, tlResults] = await _convertToTl(client, [result]);
+  return client.call({
+    _: "messages.setBotGuestChatResult",
+    queryId: Long.isLong(queryId) ? queryId : queryId.id,
+    result: tlResults[0]
+  });
+}
+
+async function answerCallbackQuery(client, queryId, params) {
+  const { cacheTime = 0, text, alert, url } = params ?? {};
+  const r = await client.call({
+    _: "messages.setBotCallbackAnswer",
+    queryId: Long.isLong(queryId) ? queryId : queryId.id,
+    cacheTime,
+    alert,
+    message: text,
+    url
+  });
+  assertTrue("messages.setBotCallbackAnswer", r);
 }
 
 async function answerInlineQuery(client, queryId, results, params) {
@@ -75433,6 +78921,12 @@ class ChatPermissions {
     return !this.raw.sendPolls;
   }
   /**
+   * Whether users can react to messages.
+   */
+  get canSendReactions() {
+    return !this.raw.sendReactions;
+  }
+  /**
    * Whether users can change the chat title,
    * photo and other settings.
    */
@@ -75482,6 +78976,8 @@ class Chat {
       case "channel":
       case "chatForbidden":
       case "channelForbidden":
+      case "community":
+      case "communityForbidden":
         break;
       default:
         throw new MtTypeAssertionError("peer", "user | chat | channel", peer._);
@@ -75538,6 +79034,8 @@ class Chat {
         };
       case "channel":
       case "channelForbidden":
+      case "community":
+      case "communityForbidden":
         if (this.raw.min) {
           return {
             _: "mtcute.dummyInputPeerMinChannel",
@@ -75560,6 +79058,9 @@ class Chat {
       case "chat":
       case "chatForbidden":
         return "group";
+      case "community":
+      case "communityForbidden":
+        return "community";
       case "channel":
       case "channelForbidden":
         if (this.raw._ === "channel" && this.raw.gigagroup) {
@@ -75575,10 +79076,10 @@ class Chat {
     }
   }
   /**
-   * Whether this chat is a group chat (i.e. not a channel)
+   * Whether this chat is a group chat (i.e. not a channel or a community)
    */
   get isGroup() {
-    return this.chatType !== "channel";
+    return this.chatType !== "channel" && this.chatType !== "community";
   }
   /**
    * Whether this chat has been verified by Telegram.
@@ -75632,7 +79133,7 @@ class Chat {
    * Consider also checking for {@link isLikelyUnavailable}.
    */
   get isBanned() {
-    return this.raw._ === "chatForbidden" || this.raw._ === "channelForbidden";
+    return this.raw._ === "chatForbidden" || this.raw._ === "channelForbidden" || this.raw._ === "communityForbidden";
   }
   /**
    * Whether the chat is likely not available (e.g. because the user was banned from there),
@@ -75642,9 +79143,12 @@ class Chat {
     switch (this.raw._) {
       case "chatForbidden":
       case "channelForbidden":
+      case "communityForbidden":
         return true;
       case "chat":
         return this.raw.left || this.raw.deactivated;
+      case "community":
+        return this.raw.left;
       case "channel":
         return this.raw.left && this.raw.username === void 0 && this.raw.usernames === void 0 && (this.raw.broadcast || this.raw.megagroup && !this.raw.hasLink);
     }
@@ -75656,6 +79160,7 @@ class Chat {
     switch (this.raw._) {
       case "channel":
       case "chat":
+      case "community":
         return !this.raw.left;
       default:
         return false;
@@ -75716,6 +79221,15 @@ class Chat {
    */
   get monoforumLinkedChatId() {
     return this.raw._ === "channel" ? this.raw.linkedMonoforumId ?? null : null;
+  }
+  /** Marked ID of the community this channel is linked to, if any */
+  get linkedCommunityId() {
+    if (this.raw._ !== "channel" || !this.raw.linkedCommunityId) return null;
+    return toggleChannelIdMark(this.raw.linkedCommunityId);
+  }
+  /** Whether this community is collapsed in the dialogs list */
+  get isCollapsedInDialogs() {
+    return this.raw._ === "community" && this.raw.collapsedInDialogs;
   }
   /** Chat title */
   get title() {
@@ -75952,6 +79466,8 @@ function parsePeer(peer, index) {
     case "channelForbidden":
     case "chat":
     case "chatForbidden":
+    case "community":
+    case "communityForbidden":
       return new Chat$2(peer);
     case "user":
       return new User$2(peer);
@@ -76592,38 +80108,6 @@ class Video extends RawDocument {
 }
 const Video$1 = /* @__PURE__ */ memoizeGetters(Video, ["fileName", "thumbnails", "fileId", "uniqueFileId", "isAnimation"]);
 const Video$2 = /* @__PURE__ */ makeInspectable(Video$1, ["fileSize", "dcId"], ["inputMedia", "inputDocument"]);
-
-function decodeWaveform(wf) {
-  const bitsCount = wf.length * 8;
-  const valuesCount = ~~(bitsCount / 5);
-  if (!valuesCount) return [];
-  const lastIdx = valuesCount - 1;
-  const result = [];
-  const dv = toDataView(wf);
-  for (let i = 0, j = 0; i < lastIdx; i++, j += 5) {
-    const byteIdx = ~~(j / 8);
-    const bitShift = j % 8;
-    result[i] = dv.getUint16(byteIdx, true) >> bitShift & 31;
-  }
-  const lastByteIdx = ~~(lastIdx * 5 / 8);
-  const lastBitShift = lastIdx * 5 % 8;
-  const lastValue = lastByteIdx === wf.length - 1 ? wf[lastByteIdx] : dv.getUint16(lastByteIdx, true);
-  result[lastIdx] = lastValue >> lastBitShift & 31;
-  return result;
-}
-function encodeWaveform(wf) {
-  const bitsCount = wf.length * 5;
-  const bytesCount = ~~((bitsCount + 7) / 8);
-  const result = alloc(bytesCount + 1);
-  const dv = toDataView(result);
-  for (let i = 0, j = 0; i < wf.length; i++, j += 5) {
-    const byteIdx = ~~(j / 8);
-    const bitShift = j % 8;
-    const value = (wf[i] & 31) << bitShift;
-    dv.setUint16(byteIdx, dv.getUint16(byteIdx, true) | value, true);
-  }
-  return result.slice(0, bytesCount);
-}
 
 class Voice extends RawDocument {
   constructor(doc, attr, media) {
@@ -77716,6 +81200,11 @@ function _messageActionFromTl(act) {
         type: "managed_bot_created",
         botId: act.botId
       };
+    case "messageActionChangeCommunity":
+      return {
+        type: "change_community",
+        community: act.communityId ? new Chat$2(this._peers.chat(act.communityId)) : null
+      };
     default:
       return null;
   }
@@ -78552,6 +82041,18 @@ class Poll {
   get hasUnreaVotes() {
     return this.results?.hasUnreadVotes ?? false;
   }
+  /** Whether voting in this poll is restricted to channel subscribers */
+  get isSubscribersOnly() {
+    return this.raw.subscribersOnly;
+  }
+  /** ISO2 country codes the poll is restricted to */
+  get countries() {
+    return this.raw.countriesIso2 ?? null;
+  }
+  /** Whether the current user can view extended statistics for this poll */
+  get canViewStats() {
+    return this.results?.canViewStats ?? false;
+  }
   /**
    * Solution for the quiz, only available
    * in case you have already answered
@@ -78611,6 +82112,8 @@ class Poll {
         revotingDisabled: this.raw.revotingDisabled,
         shuffleAnswers: this.raw.shuffleAnswers,
         hideResultsUntilClose: this.raw.hideResultsUntilClose,
+        subscribersOnly: this.raw.subscribersOnly,
+        countriesIso2: this.raw.countriesIso2,
         hash: Long.ZERO
       }
     };
@@ -79705,7 +83208,11 @@ class RepliedMessageInfo {
   get id() {
     return this.raw.replyToMsgId ?? null;
   }
-  /** ID of the replies thread where this message belongs to */
+  /**
+   * ID of the replies thread where this message belongs to
+   *
+   * For private chats with "threaded mode" enabled, this is the canonical topic ID
+   */
   get threadId() {
     if (this.raw.forumTopic) {
       return this.raw.replyToTopId ?? this.raw.replyToMsgId ?? null;
@@ -79799,6 +83306,44 @@ class RepliedMessageInfo {
 }
 const RepliedMessageInfo$1 = /* @__PURE__ */ memoizeGetters(RepliedMessageInfo, ["chat", "sender", "quoteEntities", "media"]);
 const RepliedMessageInfo$2 = /* @__PURE__ */ makeInspectable(RepliedMessageInfo$1);
+
+class RichMessage {
+  constructor(raw) {
+    this.raw = raw;
+  }
+  /** Whether this message is RTL */
+  get isRtl() {
+    return this.raw.rtl;
+  }
+  /** Whether this message is partial */
+  get isPart() {
+    return this.raw.part;
+  }
+  /** Photos in this message */
+  get photos() {
+    const map = new LongMap();
+    for (const photo of this.raw.photos) {
+      if (photo._ === "photoEmpty") continue;
+      map.set(photo.id, new Photo$2(photo));
+    }
+    return map;
+  }
+  /** Documents (usually videos and audios) in this message */
+  get documents() {
+    const map = new LongMap();
+    for (const photo of this.raw.documents) {
+      if (photo._ === "documentEmpty") continue;
+      map.set(photo.id, parseDocument(photo));
+    }
+    return map;
+  }
+  /** Blocks in this message */
+  get blocks() {
+    return this.raw.blocks;
+  }
+}
+const RichMessage$1 = /* @__PURE__ */ makeInspectable(RichMessage);
+const RichMessage$2 = /* @__PURE__ */ memoizeGetters(RichMessage$1, ["documents", "blocks"]);
 
 class SuggestedPostInfo {
   constructor(raw) {
@@ -80081,6 +83626,14 @@ class Message {
     return new User$2(this._peers.user(this.raw.viaBusinessBotId));
   }
   /**
+   * For messages sent via a bot guest chat,
+   * the peer who initiated it
+   */
+  get guestChatViaFrom() {
+    if (this.raw._ !== "message" || !this.raw.guestchatViaFrom) return null;
+    return parsePeer(this.raw.guestchatViaFrom, this._peers);
+  }
+  /**
    * Message text or media caption.
    *
    * Empty string for service messages
@@ -80131,6 +83684,10 @@ class Message {
       return null;
     }
     return _messageMediaFromTl(this._peers, this.raw.media);
+  }
+  /** If this message is a rich message, its contents. Mutually exclusive with {@link media} and {@link text} */
+  get richMessage() {
+    return this.raw._ === "message" && this.raw.richMessage !== void 0 ? new RichMessage$2(this.raw.richMessage) : null;
   }
   /**
    * Whether this is a premium media
@@ -80276,7 +83833,8 @@ const Message$1 = /* @__PURE__ */ memoizeGetters(Message, [
   "markup",
   "reactions",
   "factCheck",
-  "suggestedPost"
+  "suggestedPost",
+  "guestChatViaFrom"
 ]);
 const Message$2 = /* @__PURE__ */ makeInspectable(Message$1, ["isScheduled"], ["link"]);
 
@@ -80389,45 +83947,6 @@ async function toggleEmojiStatusPermission(client, params) {
     enabled: allow
   });
   assertTrue("bots.toggleUserEmojiStatusPermission", r);
-}
-
-async function resolvePeerMany(client, peerIds, normalizer) {
-  const ret = [];
-  const limit = 8;
-  if (peerIds.length < limit) {
-    const res = await Promise.all(
-      peerIds.map(
-        (it) => resolvePeer(client, it).catch((e) => {
-          if (e instanceof MtPeerNotFoundError) {
-            return null;
-          }
-          throw e;
-        })
-      )
-    );
-    if (!normalizer) return res;
-    for (const value of res) {
-      if (!value) continue;
-      const norm = normalizer(value);
-      if (norm) {
-        ret.push(norm);
-      }
-    }
-    return ret;
-  }
-  return parallelMap(peerIds, async (it) => {
-    let peer;
-    try {
-      peer = await resolvePeer(client, it);
-    } catch (e) {
-      if (e instanceof MtPeerNotFoundError) {
-        return null;
-      }
-      throw e;
-    }
-    if (normalizer) return normalizer(peer);
-    return peer;
-  }, { limit });
 }
 
 async function addChatMembers(client, chatId, users, params) {
@@ -82116,6 +85635,54 @@ class BotInfo {
 const BotInfo$1 = /* @__PURE__ */ makeInspectable(BotInfo);
 const BotInfo$2 = /* @__PURE__ */ memoizeGetters(BotInfo$1, ["descriptionPhoto", "descriptionVideo"]);
 
+class CommunityPeer {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** The linked peer itself */
+  get peer() {
+    return parsePeer(this.raw.peer, this._peers);
+  }
+  /**
+   * Whether this peer is visible in the community's peer list,
+   * or `null` if this information is not available
+   */
+  get isVisible() {
+    return this.raw.visible ?? null;
+  }
+  /** Whether the current user can view the history of this peer */
+  get canViewHistory() {
+    return this.raw.canViewHistory;
+  }
+}
+const CommunityPeer$1 = /* @__PURE__ */ memoizeGetters(CommunityPeer, ["peer"]);
+const CommunityPeer$2 = /* @__PURE__ */ makeInspectable(CommunityPeer$1);
+class CommunityPeerRequest {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** The peer that is requested to be linked */
+  get peer() {
+    return parsePeer(this.raw.peer, this._peers);
+  }
+  /** User who has requested the link */
+  get requestedBy() {
+    return new User$2(this._peers.user(this.raw.requestedBy));
+  }
+  /** Whether the peer is requested to be visible in the community's peer list */
+  get isVisible() {
+    return this.raw.visible;
+  }
+  /** Date when the request was sent */
+  get date() {
+    return new Date(this.raw.date * 1e3);
+  }
+}
+const CommunityPeerRequest$1 = /* @__PURE__ */ memoizeGetters(CommunityPeerRequest, ["peer", "requestedBy"]);
+const CommunityPeerRequest$2 = /* @__PURE__ */ makeInspectable(CommunityPeerRequest$1);
+
 class FullChat extends Chat$2 {
   peers;
   full;
@@ -82139,7 +85706,7 @@ class FullChat extends Chat$2 {
   }
   /** Whether the current user can change the chat's username */
   get canSetUsername() {
-    return this.full.canSetUsername;
+    return this.full._ !== "communityFull" && this.full.canSetUsername;
   }
   /** Whether the current user can change the chat's sticker set */
   get canSetStickers() {
@@ -82168,6 +85735,8 @@ class FullChat extends Chat$2 {
         return this.full.canDeleteChannel;
       case "chatFull":
         return this.raw._ === "chat" && this.raw.creator;
+      case "communityFull":
+        return this.raw._ === "community" && this.raw.creator;
     }
   }
   /**
@@ -82227,6 +85796,7 @@ class FullChat extends Chat$2 {
    * Chat's primary invite link, if available
    */
   get inviteLink() {
+    if (this.full._ === "communityFull") return null;
     switch (this.full.exportedInvite?._) {
       case "chatInvitePublicJoinRequests":
         return null;
@@ -82283,11 +85853,11 @@ class FullChat extends Chat$2 {
   }
   /** Number of admins in the chat (0 if not available) */
   get adminsCount() {
-    return this.full._ === "channelFull" ? this.full.adminsCount ?? 0 : 0;
+    return this.full._ === "chatFull" ? 0 : this.full.adminsCount ?? 0;
   }
   /** Number of users kicked from the chat (if available) */
   get kickedCount() {
-    return this.full._ === "channelFull" ? this.full.kickedCount ?? null : null;
+    return this.full._ === "chatFull" ? null : this.full.kickedCount ?? null;
   }
   /** Number of users kicked from the chat (if available) */
   get bannedCount() {
@@ -82316,6 +85886,11 @@ class FullChat extends Chat$2 {
   /** Information about bots in this chat */
   get botInfo() {
     return this.full._ === "channelFull" ? this.full.botInfo.map((it) => new BotInfo$2(it)) : [];
+  }
+  /** Bot that approves join requests in this chat, if any */
+  get guardBot() {
+    if (this.full._ !== "channelFull" || !this.full.guardBotId) return null;
+    return new User$2(this.peers.user(this.full.guardBotId));
   }
   /**
    * For supergroups, ID of the basic group from which this supergroup was upgraded,
@@ -82361,7 +85936,8 @@ class FullChat extends Chat$2 {
    * TTL of all messages in this chat, in seconds
    */
   get ttlPeriod() {
-    return this.full?.ttlPeriod ?? null;
+    if (this.full._ === "communityFull") return null;
+    return this.full.ttlPeriod ?? null;
   }
   /** Slowmode delay for this chat, if any */
   get slowmodeSeconds() {
@@ -82414,6 +85990,15 @@ class FullChat extends Chat$2 {
   get paidMessagesAvailable() {
     return this.full._ === "channelFull" && this.full.paidMessagesAvailable;
   }
+  /** For communities, list of peers linked to it */
+  get linkedPeers() {
+    if (this.full._ !== "communityFull") return [];
+    return this.full.linkedPeers.map((it) => new CommunityPeer$2(it, this.peers));
+  }
+  /** For communities, number of pending peer link requests (if available) */
+  get linkRequestsPending() {
+    return this.full._ === "communityFull" ? this.full.peerLinkRequestsPending ?? null : null;
+  }
 }
 const FullChat$1 = /* @__PURE__ */ memoizeGetters(FullChat, [
   "fullPhoto",
@@ -82421,10 +86006,12 @@ const FullChat$1 = /* @__PURE__ */ memoizeGetters(FullChat, [
   "stickerSet",
   "emojiSet",
   "botInfo",
+  "guardBot",
   "linkedChat",
   "recentRequesters",
   "stories",
-  "botVerification"
+  "botVerification",
+  "linkedPeers"
 ]);
 const FullChat$2 = /* @__PURE__ */ makeInspectable(FullChat$1);
 
@@ -83041,25 +86628,44 @@ async function* iterChatMembers(client, chatId, params) {
 }
 
 async function joinChat(client, chatId) {
-  if (typeof chatId === "string") {
-    const m = chatId.match(INVITE_LINK_REGEX);
-    if (m) {
-      const res2 = await client.call({
-        _: "messages.importChatInvite",
-        hash: m[1]
+  let res;
+  try {
+    if (typeof chatId === "string") {
+      const m = chatId.match(INVITE_LINK_REGEX);
+      if (m) {
+        res = await client.call({
+          _: "messages.importChatInvite",
+          hash: m[1]
+        });
+      }
+    }
+    if (!res) {
+      res = await client.call({
+        _: "channels.joinChannel",
+        channel: await resolveChannel(client, chatId)
       });
-      assertIsUpdatesGroup("messages.importChatInvite", res2);
-      client.handleClientUpdate(res2);
-      return new Chat$2(res2.chats[0]);
+    }
+  } catch (e) {
+    if (RpcError.is(e, "INVITE_REQUEST_SENT")) {
+      return { status: "request_sent" };
+    } else {
+      throw e;
     }
   }
-  const res = await client.call({
-    _: "channels.joinChannel",
-    channel: await resolveChannel(client, chatId)
-  });
-  assertIsUpdatesGroup("channels.joinChannel", res);
-  client.handleClientUpdate(res);
-  return new Chat$2(res.chats[0]);
+  switch (res._) {
+    case "messages.chatInviteJoinResultOk":
+      assertIsUpdatesGroup("joinChat", res.updates);
+      client.handleClientUpdate(res.updates);
+      return { status: "ok", chat: new Chat$2(res.updates.chats[0]) };
+    case "messages.chatInviteJoinResultWebView": {
+      const peers = PeersIndex.from(res);
+      return {
+        status: "webview",
+        bot: new User$2(peers.user(res.botId)),
+        queryId: res.queryId
+      };
+    }
+  }
 }
 
 async function unbanChatMember(client, params) {
@@ -83531,353 +87137,6 @@ async function setChatDescription(client, chatId, description) {
   assertTrue("messages.editChatAbout", r);
 }
 
-function guessFileMime(chunk) {
-  if (chunk.length < 12) return null;
-  const b0 = chunk[0];
-  const b1 = chunk[1];
-  if (b0 === 66 && b1 === 77) return "image/bmp";
-  if (b0 === 77 && b1 === 90) return "application/x-msdownload";
-  if (b0 === 31 && (b1 === 157 || b1 === 160)) return "application/x-compress";
-  if (b0 === 31 && b1 === 139) return "application/gzip";
-  const b2 = chunk[2];
-  if (b0 === 66 && b1 === 90 && b2 === 104) return "application/x-bzip2";
-  if (b0 === 73 && b1 === 68 && b2 === 51) return "audio/mpeg";
-  if (b0 === 255 && (b1 === 251 || b1 === 243 || b1 === 242)) return "audio/mpeg";
-  const b3 = chunk[3];
-  if (b0 === 80 && b1 === 75 && b2 === 3 && b3 === 4) return "application/zip";
-  if (b0 === 56 && b1 === 66 && b2 === 80 && b3 === 83) return "image/vnd.adobe.photoshop";
-  if (b0 === 127 && b1 === 69 && b2 === 76 && b3 === 70) return "application/x-elf";
-  if (b0 === 254 && b1 === 237 && b2 === 250 && b3 === 207) return "application/x-mach-binary";
-  if (b0 === 40 && b1 === 181 && b2 === 47 && b3 === 253) return "application/zstd";
-  if (b0 === 102 && b1 === 76 && b2 === 97 && b3 === 67) return "audio/x-flac";
-  if (b0 === 255 && b1 === 216 && b2 === 255 && (b3 === 219 || b3 === 224 || b3 === 238 || b3 === 225)) {
-    return "image/jpeg";
-  }
-  if (b0 === 79 && b1 === 103 && b2 === 103 && b3 === 83) {
-    if (chunk.length > 36) {
-      const type = String.fromCharCode(...chunk.subarray(28, 36));
-      if (type === "OpusHead") return "audio/ogg";
-      if (type.startsWith("theora")) return "video/ogg";
-      if (type.startsWith("video")) return "video/ogg";
-      if (type.startsWith("FLAC")) return "audio/ogg";
-      if (type.startsWith("Speex  ")) return "audio/ogg";
-      if (type.startsWith("vorbis")) return "audio/ogg";
-    }
-    return "application/ogg";
-  }
-  const b4 = chunk[4];
-  if (b0 === 37 && b1 === 80 && b2 === 68 && b3 === 70 && b4 === 45) return "application/pdf";
-  const b5 = chunk[5];
-  if (b0 === 71 && b1 === 73 && b2 === 70 && b3 === 56) {
-    if ((b4 === 55 || b4 === 57) && b5 === 97) return "image/gif";
-  }
-  if (b0 === 55 && b1 === 122 && b2 === 188 && b3 === 175 && b4 === 39 && b5 === 28) {
-    return "application/x-7z-compressed";
-  }
-  const b6 = chunk[6];
-  const b7 = chunk[7];
-  if (b0 === 137 && b1 === 80 && b2 === 78 && b3 === 71 && b4 === 13 && b5 === 10 && b6 === 26 && b7 === 10) {
-    return "image/png";
-  }
-  if (b0 === 82 && b1 === 97 && b2 === 114 && b3 === 33 && b4 === 26 && b5 === 7) {
-    if (b6 === 0 || b6 === 1) return "application/x-rar-compressed";
-  }
-  if (b4 === 102 && b5 === 116 && b6 === 121 && b7 === 112 && chunk[8] & 96) {
-    const brandMajor = String.fromCharCode(...chunk.subarray(8, 12)).replace(/\0/g, " ").trim();
-    switch (brandMajor) {
-      case "avif":
-      case "avis":
-        return "image/avif";
-      case "mif1":
-        return "image/heif";
-      case "msf1":
-        return "image/heif-sequence";
-      case "heic":
-      case "heix":
-        return "image/heic";
-      case "hevc":
-      case "hevx":
-        return "image/heic-sequence";
-      case "qt":
-        return "video/quicktime";
-      case "M4V":
-      case "M4VH":
-      case "M4VP":
-        return "video/x-m4v";
-      case "M4A":
-        return "audio/x-m4a";
-      case "M4B":
-      case "F4A":
-      case "F4B":
-        return "audio/mp4";
-      case "crx":
-        return "image/x-canon-cr3";
-      default:
-        if (brandMajor.startsWith("3g")) {
-          if (brandMajor.startsWith("3g2")) {
-            return "video/3gpp2";
-          }
-          return "video/3gpp";
-        }
-        return "video/mp4";
-    }
-  }
-  return null;
-}
-const MIME_TO_EXTENSION = {
-  "image/bmp": "bmp",
-  "application/x-msdownload": "exe",
-  "application/x-compress": "z",
-  "application/gzip": "gz",
-  "application/x-bzip2": "bz2",
-  "audio/mpeg": "mp3",
-  "application/zip": "zip",
-  "image/vnd.adobe.photoshop": "psd",
-  "application/zstd": "zst",
-  "audio/x-flac": "flac",
-  "image/jpeg": "jpg",
-  "audio/ogg": "ogg",
-  "video/ogg": "ogv",
-  "application/ogg": "ogg",
-  "application/pdf": "pdf",
-  "image/gif": "gif",
-  "application/x-7z-compressed": "7z",
-  "image/png": "png",
-  "application/x-rar-compressed": "rar",
-  "image/avif": "avif",
-  "image/heif": "heif",
-  "image/heif-sequence": "heif",
-  "image/heic": "heic",
-  "image/heic-sequence": "heic",
-  "video/quicktime": "mov",
-  "video/x-m4v": "m4v",
-  "audio/x-m4a": "m4a",
-  "audio/mp4": "m4a",
-  "image/x-canon-cr3": "cr3",
-  "video/3gpp2": "3g2",
-  "video/3gpp": "3gp",
-  "video/mp4": "mp4"
-};
-
-const OVERRIDE_MIME = {
-  // tg doesn't interpret `audio/opus` files as voice messages for some reason
-  "audio/opus": "audio/ogg"
-};
-const SMALL_FILE_MAX_SIZE$1 = 131072;
-const BIG_FILE_MIN_SIZE = 10485760;
-const DEFAULT_FILE_NAME = "unnamed";
-const REQUESTS_PER_CONNECTION$1 = 3;
-const MAX_PART_COUNT = 4e3;
-const MAX_PART_COUNT_PREMIUM = 8e3;
-const HAS_FILE = typeof File !== "undefined";
-const HAS_RESPONSE = typeof Response !== "undefined";
-const HAS_URL = typeof URL !== "undefined";
-const HAS_BLOB = typeof Blob !== "undefined";
-async function uploadFile(client, params) {
-  let file = params.file;
-  let fileSize = -1;
-  let fileName = params.fileName;
-  let fileMime = params.fileMime;
-  const abortSignal = params.abortSignal;
-  if (client.platform.normalizeFile) {
-    const res = await client.platform.normalizeFile(file);
-    if (res?.file) {
-      file = res.file;
-      if (res.fileSize) fileSize = res.fileSize;
-      if (res.fileName) fileName = res.fileName;
-    }
-  }
-  if (ArrayBuffer.isView(file)) {
-    fileSize = file.length;
-    file = Bytes.from(file);
-  }
-  if (HAS_FILE && file instanceof File) {
-    fileName = file.name;
-    fileSize = file.size;
-    fileMime = file.type;
-    file = file.stream();
-  }
-  if (HAS_URL && file instanceof URL) {
-    file = await fetch(file);
-  }
-  if (HAS_BLOB && file instanceof Blob) {
-    fileSize = file.size;
-    file = file.stream();
-  }
-  if (HAS_RESPONSE && file instanceof Response) {
-    const length = Number.parseInt(file.headers.get("content-length") || "0");
-    if (!Number.isNaN(length) && length) fileSize = length;
-    fileMime = file.headers.get("content-type")?.split(";")[0];
-    const disposition = file.headers.get("content-disposition");
-    if (disposition) {
-      const idx2 = disposition.indexOf("filename=");
-      if (idx2 > -1) {
-        const raw = disposition.slice(idx2 + 9).split(";")[0];
-        fileName = JSON.parse(raw);
-      }
-    }
-    if (fileName === DEFAULT_FILE_NAME) {
-      const url = new URL(file.url);
-      const name = url.pathname.split("/").pop();
-      if (name && name.includes(".")) {
-        fileName = name;
-      }
-    }
-    if (!file.body) {
-      throw new MtArgumentError("Fetch response contains `null` body");
-    }
-    file = file.body;
-  }
-  if (file instanceof ReadableStream) {
-    file = webReadableToFuman(file);
-  } else if (!(typeof file === "object" && "read" in file)) {
-    throw new MtArgumentError("Could not convert input `file` to stream!");
-  }
-  let readable = file;
-  if (fileSize === -1 && params.fileSize) fileSize = params.fileSize;
-  if (fileSize === -1 && params.requireFileSize) {
-    const buffer = await untilEnd(readable);
-    fileSize = buffer.length;
-    readable = Bytes.from(buffer);
-  }
-  let partSizeKb = params.partSize;
-  if (!partSizeKb) {
-    if (fileSize === -1) {
-      partSizeKb = params.estimatedSize ? determinePartSize(params.estimatedSize, true) : 64;
-    } else {
-      partSizeKb = determinePartSize(fileSize, true);
-    }
-  }
-  if (partSizeKb > 512) {
-    throw new MtArgumentError(`Invalid part size: ${partSizeKb}KB`);
-  }
-  const partSize = partSizeKb * 1024;
-  let partCount = fileSize === -1 ? -1 : ~~((fileSize + partSize - 1) / partSize);
-  const maxPartCount = client.storage.self.getCached()?.isPremium ? MAX_PART_COUNT_PREMIUM : MAX_PART_COUNT;
-  if (partCount > maxPartCount) {
-    throw new MtArgumentError(`File is too large (max ${maxPartCount} parts, got ${partCount})`);
-  }
-  const isBig = fileSize === -1 || fileSize > BIG_FILE_MIN_SIZE;
-  const isSmall = fileSize !== -1 && fileSize < SMALL_FILE_MAX_SIZE$1;
-  const connectionKind = isSmall ? "main" : "upload";
-  const connectionPoolSize = Math.min(await client.getPoolSize(connectionKind), partCount);
-  const requestsPerConnection = params.requestsPerConnection ?? REQUESTS_PER_CONNECTION$1;
-  client.log.debug(
-    "uploading %d bytes file in %d chunks, each %d bytes in %s connection pool of size %d",
-    fileSize,
-    partCount,
-    partSize,
-    connectionKind,
-    connectionPoolSize
-  );
-  const fileId = randomLong();
-  const lock = new AsyncLock();
-  let pos = 0;
-  let idx = 0;
-  let readableEnded = false;
-  const uploadNextPart = async () => {
-    if (abortSignal?.aborted) return;
-    const thisIdx = idx++;
-    await lock.acquire();
-    if (readableEnded) {
-      lock.release();
-      return;
-    }
-    let part;
-    try {
-      part = await exactly$1(readable, partSize, "truncate");
-    } finally {
-      lock.release();
-    }
-    if (abortSignal?.aborted) return;
-    const ended = part.length < partSize;
-    if (ended) {
-      readableEnded = true;
-      if (fileSize === -1) {
-        fileSize = pos + part.length;
-        partCount = ~~((fileSize + partSize - 1) / partSize);
-      } else if (thisIdx !== partCount - 1) {
-        throw new MtArgumentError(`Unexpected EOS (there were only ${idx} parts, but expected ${partCount})`);
-      }
-      client.log.debug("readable ended, file size = %d, part count = %d", fileSize, partCount);
-    }
-    if (thisIdx === 0 && fileMime === void 0) {
-      const mime = guessFileMime(part);
-      if (mime) {
-        fileMime = mime;
-      } else {
-        const isPlainText = isProbablyPlainText(part.slice(0, 8));
-        fileMime = isPlainText ? "text/plain" : "application/octet-stream";
-      }
-    }
-    const request = isBig ? {
-      _: "upload.saveBigFilePart",
-      fileId,
-      filePart: thisIdx,
-      fileTotalParts: partCount,
-      bytes: part
-    } : {
-      _: "upload.saveFilePart",
-      fileId,
-      filePart: thisIdx,
-      bytes: part
-    };
-    const result = await client.call(request, { kind: connectionKind, abortSignal });
-    if (!result) throw new Error(`Failed to upload part ${idx}`);
-    if (abortSignal?.aborted) return;
-    pos += part.length;
-    params.progressCallback?.(pos, fileSize);
-    if (idx === partCount) return;
-    return uploadNextPart();
-  };
-  let poolSize = partCount === -1 ? 1 : connectionPoolSize * requestsPerConnection;
-  if (partCount !== -1 && poolSize > partCount) poolSize = partCount;
-  await Promise.all(Array.from({ length: poolSize }, uploadNextPart));
-  abortSignal?.throwIfAborted();
-  if (fileName === void 0) {
-    const ext = MIME_TO_EXTENSION[fileMime];
-    fileName = ext ? `${DEFAULT_FILE_NAME}.${ext}` : DEFAULT_FILE_NAME;
-  } else if (params.requireExtension) {
-    const extFromMime = MIME_TO_EXTENSION[fileMime];
-    const idx2 = fileName.lastIndexOf(".");
-    const extFromName = idx2 === -1 ? void 0 : fileName.slice(idx2 + 1);
-    if (!extFromName) {
-      if (!extFromMime) {
-        throw new MtArgumentError(`File name does not have an extension, and we cannot guess it from the mime type (${fileMime})`);
-      }
-      fileName = `${fileName}.${extFromMime}`;
-    }
-  }
-  let inputFile;
-  if (isBig) {
-    inputFile = {
-      _: "inputFileBig",
-      id: fileId,
-      parts: partCount,
-      name: fileName
-    };
-  } else {
-    inputFile = {
-      _: "inputFile",
-      id: fileId,
-      parts: partCount,
-      name: fileName,
-      md5Checksum: ""
-      // tdlib doesn't do this, why should we?
-    };
-  }
-  if (fileMime in OVERRIDE_MIME) fileMime = OVERRIDE_MIME[fileMime];
-  return {
-    inputFile,
-    size: fileSize,
-    mime: fileMime
-  };
-}
-
-function isUploadedFile(obj) {
-  return obj !== null && typeof obj === "object" && "inputFile" in obj && "size" in obj && "mime" in obj;
-}
-
 async function setChatPhoto(client, params) {
   const { chatId, type, media, previewSec } = params;
   const chat = await resolvePeer(client, chatId);
@@ -84059,22 +87318,12 @@ async function transferChatOwnership(client, params) {
     await client.call({ _: "account.getPassword" }),
     params.password
   );
-  let res;
-  if (isInputPeerChannel(peer)) {
-    res = await client.call({
-      _: "channels.editCreator",
-      channel: toInputChannel(peer),
-      userId: user,
-      password
-    });
-  } else {
-    res = await client.call({
-      _: "messages.editChatCreator",
-      peer,
-      userId: user,
-      password
-    });
-  }
+  const res = await client.call({
+    _: "messages.editChatCreator",
+    peer,
+    userId: user,
+    password
+  });
   client.handleClientUpdate(res);
 }
 
@@ -84095,12 +87344,137 @@ async function unarchiveChats(client, chats) {
   client.handleClientUpdate(res);
 }
 
-function inputTextToTl(text) {
+async function banCommunityParticipant(client, params) {
+  const { communityId, participantId } = params;
+  const r = await client.call({
+    _: "communities.toggleParticipantBanned",
+    community: await resolveChannel(client, communityId),
+    participant: await resolvePeer(client, participantId)
+  });
+  assertTrue("communities.toggleParticipantBanned", r);
+}
+async function unbanCommunityParticipant(client, params) {
+  const { communityId, participantId } = params;
+  const r = await client.call({
+    _: "communities.toggleParticipantBanned",
+    community: await resolveChannel(client, communityId),
+    participant: await resolvePeer(client, participantId),
+    unban: true
+  });
+  assertTrue("communities.toggleParticipantBanned", r);
+}
+
+async function createCommunity(client, params) {
+  const { title, chatId, about, hidden, shouldDispatch } = params;
+  const res = await client.call({
+    _: "communities.create",
+    title,
+    about,
+    hidden,
+    peer: await resolvePeer(client, chatId)
+  });
+  assertIsUpdatesGroup("communities.create", res);
+  client.handleClientUpdate(res, !shouldDispatch);
+  const community = res.chats.find((it) => it._ === "community");
+  if (!community) {
+    throw new MtTypeAssertionError("communities.create (@ .chats)", "community", "none");
+  }
+  return new Chat$2(community);
+}
+
+async function getCommunityLinkRequests(client, communityId, params) {
+  const { offset = "", limit = 100 } = params ?? {};
+  const res = await client.call({
+    _: "communities.getPeerLinkRequests",
+    community: await resolveChannel(client, communityId),
+    offset,
+    limit
+  });
+  const peers = PeersIndex.from(res);
+  return makeArrayPaginated(
+    res.requests.map((it) => new CommunityPeerRequest$2(it, peers)),
+    res.totalCount,
+    res.nextOffset
+  );
+}
+
+async function getCommunityParticipantChats(client, params) {
+  const { communityId, participantId } = params;
+  const res = await client.call({
+    _: "communities.getParticipantJoinedChats",
+    community: await resolveChannel(client, communityId),
+    participant: await resolvePeer(client, participantId)
+  });
+  const peers = PeersIndex.from(res);
   return {
-    _: "textWithEntities",
-    text: typeof text === "string" ? text : text.text,
-    entities: typeof text === "string" ? [] : text.entities ?? []
+    creatorChats: res.creatorChatIds.map((it) => new Chat$2(peers.chat(it))),
+    joinedChats: res.joinedChatIds.map((it) => new Chat$2(peers.chat(it)))
   };
+}
+
+async function getJoinedCommunities(client) {
+  const res = await client.call({
+    _: "communities.getJoinedCommunities"
+  });
+  const ret = [];
+  for (const chat of res.chats) {
+    if (chat._ === "community" || chat._ === "communityForbidden") {
+      ret.push(new Chat$2(chat));
+    }
+  }
+  return ret;
+}
+
+async function hideCommunityLinkRequest(client, params) {
+  const { communityId, peerId, action } = params;
+  const r = await client.call({
+    _: "communities.togglePeerLinkRequestApproval",
+    community: await resolveChannel(client, communityId),
+    peer: await resolvePeer(client, peerId),
+    reject: action === "decline" || void 0
+  });
+  assertTrue("communities.togglePeerLinkRequestApproval", r);
+}
+async function hideAllCommunityLinkRequests(client, params) {
+  const { communityId, action } = params;
+  const r = await client.call({
+    _: "communities.toggleAllPeerLinkRequestApproval",
+    community: await resolveChannel(client, communityId),
+    reject: action === "decline" || void 0
+  });
+  assertTrue("communities.toggleAllPeerLinkRequestApproval", r);
+}
+
+async function linkCommunityPeer(client, params) {
+  const { communityId, peerId, hidden } = params;
+  const r = await client.call({
+    _: "communities.togglePeerLink",
+    community: await resolveChannel(client, communityId),
+    peer: await resolvePeer(client, peerId),
+    visible: !hidden || void 0,
+    hidden: hidden || void 0
+  });
+  assertTrue("communities.togglePeerLink", r);
+}
+async function unlinkCommunityPeer(client, params) {
+  const { communityId, peerId } = params;
+  const r = await client.call({
+    _: "communities.togglePeerLink",
+    community: await resolveChannel(client, communityId),
+    peer: await resolvePeer(client, peerId),
+    deleted: true
+  });
+  assertTrue("communities.togglePeerLink", r);
+}
+
+async function toggleCommunityCollapsed(client, params) {
+  const { communityId, collapsed, shouldDispatch } = params;
+  const res = await client.call({
+    _: "communities.toggleCommunityCollapsedInDialogs",
+    community: await resolveChannel(client, communityId),
+    collapsed: collapsed || void 0
+  });
+  client.handleClientUpdate(res, !shouldDispatch);
 }
 
 async function addContact(client, params) {
@@ -84561,6 +87935,211 @@ async function setFoldersOrder(client, order) {
   assertTrue("messages.updateDialogFiltersOrder", r);
 }
 
+async function deleteEphemeralMessage(client, params) {
+  const { chatId, receiverId, messageId } = params;
+  const r = await client.call({
+    _: "ephemeral.deleteMessage",
+    peer: await resolvePeer(client, chatId),
+    receiverId: await resolveUser(client, receiverId),
+    id: messageId
+  });
+  assertTrue("ephemeral.deleteMessage", r);
+}
+
+class EphemeralMessage {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** ID of this message (unique within the chat and receiver) */
+  get id() {
+    return this.raw.id;
+  }
+  /** Whether this message is outgoing */
+  get isOutgoing() {
+    return this.raw.out;
+  }
+  /** Sender of this message (usually the bot) */
+  get sender() {
+    return parsePeer(this.raw.fromId, this._peers);
+  }
+  /** Chat where this message was sent */
+  get chat() {
+    return parsePeer(this.raw.peerId, this._peers);
+  }
+  /** ID of the user this message is visible to */
+  get receiverId() {
+    return this.raw.receiverId;
+  }
+  /**
+   * User this message is visible to.
+   *
+   * Might not be available in some cases (e.g. in the message
+   * returned from {@link TelegramClient.sendEphemeralMessage},
+   * since the server does not send the receiver entity there) —
+   * use {@link receiverId} instead.
+   */
+  get receiver() {
+    const user = this._peers.users.get(this.raw.receiverId);
+    if (!user || user._ === "userEmpty") return null;
+    return new User$2(user);
+  }
+  /** ID of the topic this message was sent to, if any */
+  get topicId() {
+    return this.raw.topMsgId ?? null;
+  }
+  /** Date when this message was sent */
+  get date() {
+    return new Date(this.raw.date * 1e3);
+  }
+  /** Message text */
+  get text() {
+    return this.raw.message;
+  }
+  /** Message text/caption entities (may be empty) */
+  get entities() {
+    const entities = [];
+    if (this.raw.entities?.length) {
+      for (const ent of this.raw.entities) {
+        entities.push(new MessageEntity$2(ent, this.raw.message));
+      }
+    }
+    return entities;
+  }
+  get textWithEntities() {
+    return {
+      text: this.raw.message,
+      entities: this.raw.entities
+    };
+  }
+  /**
+   * Message media. `null` for text-only messages
+   * and for unsupported media types.
+   *
+   * For unsupported media types, use `.raw.media` directly.
+   */
+  get media() {
+    if (!this.raw.media || this.raw.media._ === "messageMediaEmpty") {
+      return null;
+    }
+    return _messageMediaFromTl(this._peers, this.raw.media);
+  }
+  /** Reply markup attached to this message, if any */
+  get replyMarkup() {
+    return this.raw.replyMarkup ?? null;
+  }
+  /** Information about the message this message is a reply to, if any */
+  get replyTo() {
+    return this.raw.replyTo ?? null;
+  }
+}
+const EphemeralMessage$1 = /* @__PURE__ */ memoizeGetters(EphemeralMessage, ["sender", "chat", "receiver", "entities", "media"]);
+const EphemeralMessage$2 = /* @__PURE__ */ makeInspectable(EphemeralMessage$1);
+
+function _findEphemeralMessageInUpdate(client, res, isEdit = false, noDispatch = true) {
+  assertIsUpdatesGroup("_findEphemeralMessageInUpdate", res);
+  client.handleClientUpdate(res, noDispatch);
+  for (const u of res.updates) {
+    if (u._ !== "updateNewEphemeralMessage" && u._ !== "updateEditEphemeralMessage") continue;
+    if (isEdit !== (u._ === "updateEditEphemeralMessage")) continue;
+    const peers = PeersIndex.from(res);
+    return new EphemeralMessage$2(u.message, peers);
+  }
+  throw new MtTypeAssertionError(
+    "_findEphemeralMessageInUpdate (@ .updates[*])",
+    "updateNewEphemeralMessage | updateEditEphemeralMessage",
+    "none"
+  );
+}
+
+async function editEphemeralMessage(client, params) {
+  const { chatId, receiverId, messageId, text, media, replyMarkup, shouldDispatch } = params;
+  let message;
+  let entities;
+  if (text !== void 0) {
+    [message, entities] = await _normalizeInputText(client, text);
+  }
+  const peer = await resolvePeer(client, chatId);
+  const res = await client.call({
+    _: "ephemeral.editMessage",
+    peer,
+    receiverId: await resolveUser(client, receiverId),
+    id: messageId,
+    message,
+    entities,
+    media: media ? await _normalizeInputMedia(client, media, { uploadPeer: peer }) : void 0,
+    replyMarkup: _convertToTl$2(replyMarkup)
+  });
+  return _findEphemeralMessageInUpdate(client, res, true, !shouldDispatch);
+}
+
+async function getEphemeralCallbackAnswer(client, params) {
+  const { chatId, messageId, data, timeout = 1e4, fireAndForget } = params;
+  const promise = client.call(
+    {
+      _: "ephemeral.getCallbackAnswer",
+      peer: await resolvePeer(client, chatId),
+      id: messageId,
+      data: typeof data === "string" ? encoder.encode(data) : data
+    },
+    { timeout, throw503: true }
+  );
+  if (fireAndForget) {
+    promise.catch(() => {
+    });
+    return {
+      _: "messages.botCallbackAnswer",
+      cacheTime: 0
+    };
+  }
+  return promise;
+}
+
+async function sendEphemeralMessage(client, chatId, receiverId, text, params) {
+  const { media, replyTo, replyToEphemeral, queryId, shouldDispatch } = params ?? {};
+  const [message, entities] = await _normalizeInputText(client, text);
+  const peer = await resolvePeer(client, chatId);
+  let replyToTl;
+  if (replyTo !== void 0) {
+    replyToTl = { _: "inputReplyToMessage", replyToMsgId: replyTo };
+  } else if (replyToEphemeral !== void 0) {
+    replyToTl = { _: "inputReplyToEphemeralMessage", id: replyToEphemeral };
+  }
+  const res = await client.call({
+    _: "ephemeral.sendMessage",
+    peer,
+    receiverId: await resolveUser(client, receiverId),
+    queryId,
+    message,
+    entities,
+    media: media ? await _normalizeInputMedia(client, media, { uploadPeer: peer }) : void 0,
+    replyMarkup: _convertToTl$2(params?.replyMarkup),
+    randomId: randomLong(),
+    replyTo: replyToTl
+  });
+  return _findEphemeralMessageInUpdate(client, res, false, !shouldDispatch);
+}
+
+const INITIAL_DELAY_MS = 50;
+const MIN_DELAY_MS = 3;
+const DELAY_DECAY = 0.8;
+class DownloadDelayGate {
+  _nextAt = 0;
+  _delay = INITIAL_DELAY_MS;
+  wait(signal) {
+    const now = performance.now();
+    const at = Math.max(now, this._nextAt);
+    this._nextAt = at + this._delay;
+    this._delay = Math.max(this._delay * DELAY_DECAY, MIN_DELAY_MS);
+    const ms = at - now;
+    if (ms <= 0) return Promise.resolve();
+    if (signal) return sleepWithAbort(ms, signal);
+    return new Promise((resolve) => {
+      setTimeoutWrap(resolve, ms);
+    });
+  }
+}
+
 const SMALL_FILE_MAX_SIZE = 131072;
 const REQUESTS_PER_CONNECTION = 3;
 async function _normalizeFileDownloadLocation(client, input) {
@@ -84637,8 +88216,17 @@ async function* downloadAsIterable(client, input, params) {
   let dcId = params?.dcId ?? normalized?.dcId;
   const primaryDcId = await client.getPrimaryDcId();
   if (!dcId) dcId = primaryDcId;
-  const abortSignal = params?.abortSignal;
+  const stallTimeout = params?.stallTimeout;
+  const stallAbort = stallTimeout != null ? new AbortController() : void 0;
+  const abortSignal = stallAbort ? params?.abortSignal ? combineAbortSignals(params.abortSignal, stallAbort.signal) : stallAbort.signal : params?.abortSignal;
   let ended = false;
+  let stallTimer;
+  const resetStallTimer = stallAbort && stallTimeout != null ? () => {
+    if (stallTimer) clearTimeoutWrap(stallTimer);
+    stallTimer = setTimeoutWrap(() => {
+      stallAbort.abort(new MtTimeoutError(stallTimeout));
+    }, stallTimeout);
+  } : void 0;
   const partSizeKb = params?.partSize ?? (fileSize ? determinePartSize(fileSize) : 64);
   if (partSizeKb % 4 !== 0) {
     throw new MtArgumentError(`Invalid part size: ${partSizeKb}. Must be divisible by 4.`);
@@ -84667,6 +88255,7 @@ async function* downloadAsIterable(client, input, params) {
     connectionKind = "download";
   }
   const poolSize = await client.getPoolSize(connectionKind, dcId);
+  const delayGate = isSmall ? void 0 : new DownloadDelayGate();
   client.log.debug(
     "Downloading file of size %d from dc %d using %s connection pool (pool size: %d)",
     limitBytes,
@@ -84674,6 +88263,44 @@ async function* downloadAsIterable(client, input, params) {
     connectionKind,
     poolSize
   );
+  const callPart = async (chunk) => {
+    while (true) {
+      try {
+        return await client.call(
+          {
+            _: isWeb ? "upload.getWebFile" : "upload.getFile",
+            // eslint-disable-next-line
+            location,
+            offset: offset + chunkSize * chunk,
+            limit: chunkSize
+          },
+          {
+            dcId,
+            kind: connectionKind,
+            maxRetryCount: Infinity,
+            // retry until explicitly aborted (or finished)
+            floodSleepThreshold: Infinity,
+            abortSignal
+          }
+        );
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") return void 0;
+        if (!RpcError.is(e)) throw e;
+        if (e.is("FILE_MIGRATE_%d")) {
+          dcId = e.newDc;
+          continue;
+        } else if (e.is("FILEREF_UPGRADE_NEEDED")) {
+          throw new MtUnsupportedError("File ref expired!");
+        } else if (e.is("MTPROTO_CLUSTER_INVALID") && dcId != null) {
+          client.log.debug("received cluster invalid error for dc %d, recreating dc", dcId);
+          await client.recreateDc(dcId);
+          continue;
+        } else {
+          throw e;
+        }
+      }
+    }
+  };
   const downloadChunk = async (chunk = nextWorkerChunkIdx++) => {
     let result;
     if (ended) {
@@ -84683,40 +88310,20 @@ async function* downloadAsIterable(client, input, params) {
     if (throttlePromise) {
       await throttlePromise;
     }
+    if (ended) {
+      return;
+    }
     try {
-      result = await client.call(
-        {
-          _: isWeb ? "upload.getWebFile" : "upload.getFile",
-          // eslint-disable-next-line
-          location,
-          offset: offset + chunkSize * chunk,
-          limit: chunkSize
-        },
-        {
-          dcId,
-          kind: connectionKind,
-          maxRetryCount: Infinity,
-          // retry until explicitly aborted (or finished)
-          floodSleepThreshold: Infinity,
-          abortSignal
-        }
-      );
+      if (delayGate) await delayGate.wait(abortSignal);
+      result = await callPart(chunk);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
-      if (!RpcError.is(e)) throw e;
-      if (e.is("FILE_MIGRATE_%d")) {
-        dcId = e.newDc;
-        return downloadChunk(chunk);
-      } else if (e.is("FILEREF_UPGRADE_NEEDED")) {
-        throw new MtUnsupportedError("File ref expired!");
-      } else if (e.is("MTPROTO_CLUSTER_INVALID") && dcId != null) {
-        client.log.debug("received cluster invalid error for dc %d, recreating dc", dcId);
-        await client.recreateDc(dcId);
-        return downloadChunk(chunk);
-      } else {
-        throw e;
-      }
+      throw e;
     }
+    if (!result) {
+      return;
+    }
+    resetStallTimer?.();
     if (result._ === "upload.fileCdnRedirect") {
       throw new MtUnsupportedError("Received CDN redirect, which is not supported (yet)");
     }
@@ -84736,6 +88343,7 @@ async function* downloadAsIterable(client, input, params) {
     }
   };
   let error;
+  resetStallTimer?.();
   void Promise.all(Array.from({
     length: Math.min(poolSize * (isSmall ? 1 : REQUESTS_PER_CONNECTION), numChunks)
   }, downloadChunk)).catch((e) => {
@@ -84746,27 +88354,33 @@ async function* downloadAsIterable(client, input, params) {
   }).then(() => {
     client.log.debug("download workers finished");
   });
-  abortSignal?.addEventListener("abort", () => {
+  const onAbort = () => {
     client.log.debug("download aborted");
     error = abortSignal.reason;
     ended = true;
     nextChunkCv.notify();
-  });
+  };
+  abortSignal?.addEventListener("abort", onAbort);
   let position = offset;
-  while (position < limitBytes) {
-    await nextChunkCv.wait();
-    if (error) throw error;
-    while (nextChunkIdx in buffer) {
-      const buf = buffer[nextChunkIdx];
-      delete buffer[nextChunkIdx];
-      position += buf.length;
-      params?.progressCallback?.(position, limitBytes);
-      yield buf;
-      nextChunkIdx++;
-      if (buf.length < chunkSize) {
-        return;
+  try {
+    while (position < limitBytes) {
+      await nextChunkCv.wait();
+      if (error) throw error;
+      while (nextChunkIdx in buffer) {
+        const buf = buffer[nextChunkIdx];
+        delete buffer[nextChunkIdx];
+        position += buf.length;
+        params?.progressCallback?.(position, limitBytes);
+        yield buf;
+        nextChunkIdx++;
+        if (buf.length < chunkSize) {
+          return;
+        }
       }
     }
+  } finally {
+    if (stallTimer) clearTimeoutWrap(stallTimer);
+    abortSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -84844,11 +88458,9 @@ function downloadAsStream(client, location, params) {
     });
   }
   const cancel = new AbortController();
-  if (params?.abortSignal) {
-    params?.abortSignal.addEventListener("abort", () => {
-      cancel.abort();
-    });
-  }
+  const onAbort = () => cancel.abort();
+  params?.abortSignal?.addEventListener("abort", onAbort);
+  const removeAbortListener = () => params?.abortSignal?.removeEventListener("abort", onAbort);
   const backpressureCv = new ConditionVariable();
   return new ReadableStream({
     start(controller) {
@@ -84863,453 +88475,19 @@ function downloadAsStream(client, location, params) {
           controller.enqueue(chunk);
         }
         controller.close();
-      })().catch((e) => controller.error(e));
+      })().catch((e) => controller.error(e)).finally(removeAbortListener);
     },
     pull() {
       backpressureCv.notify();
     },
     cancel() {
       cancel.abort();
+      removeAbortListener();
     }
   }, {
     highWaterMark: params?.highWaterMark,
     size: (chunk) => chunk?.length ?? 0
   });
-}
-
-async function _normalizeInputFile(client, input, params) {
-  if (typeof input === "object" && isAnyInputMedia(input)) {
-    throw new MtArgumentError("InputFile can't be created from an InputMedia");
-  } else if (isFileIdLike(input)) {
-    if (typeof input === "string" && input.match(/^file:/)) {
-      const uploaded = await uploadFile(client, {
-        file: input.substring(5),
-        ...params
-      });
-      return uploaded.inputFile;
-    }
-    throw new MtArgumentError("InputFile can't be created from an URL or a File ID");
-  } else if (isUploadedFile(input)) {
-    return input.inputFile;
-  } else if (typeof input === "object" && isAnyInputFile(input)) {
-    return input;
-  } else {
-    const uploaded = await uploadFile(client, {
-      file: input,
-      ...params
-    });
-    return uploaded.inputFile;
-  }
-}
-
-async function _normalizeInputMedia(client, media, params = {}, uploadMedia = false) {
-  if (isAnyInputMedia(media)) {
-    switch (media._) {
-      case "inputMediaStory":
-        return {
-          ...media,
-          peer: await resolvePeer(client, media.peer)
-        };
-    }
-    return media;
-  }
-  if (media.type === "venue") {
-    return {
-      _: "inputMediaVenue",
-      geoPoint: {
-        _: "inputGeoPoint",
-        lat: media.latitude,
-        long: media.longitude
-      },
-      title: media.title,
-      address: media.address,
-      provider: media.source?.provider ?? "",
-      venueId: media.source?.id ?? "",
-      venueType: media.source?.type ?? ""
-    };
-  }
-  if (media.type === "geo") {
-    return {
-      _: "inputMediaGeoPoint",
-      geoPoint: {
-        _: "inputGeoPoint",
-        lat: media.latitude,
-        long: media.longitude
-      }
-    };
-  }
-  if (media.type === "geo_live") {
-    return {
-      _: "inputMediaGeoLive",
-      geoPoint: {
-        _: "inputGeoPoint",
-        lat: media.latitude,
-        long: media.longitude
-      },
-      stopped: media.stopped,
-      heading: media.heading,
-      period: media.period,
-      proximityNotificationRadius: media.proximityNotificationRadius
-    };
-  }
-  if (media.type === "dice") {
-    return {
-      _: "inputMediaDice",
-      emoticon: media.emoji
-    };
-  }
-  if (media.type === "contact") {
-    return {
-      _: "inputMediaContact",
-      phoneNumber: media.phone,
-      firstName: media.firstName,
-      lastName: media.lastName ?? "",
-      vcard: media.vcard ?? ""
-    };
-  }
-  if (media.type === "game") {
-    return {
-      _: "inputMediaGame",
-      id: typeof media.game === "string" ? {
-        _: "inputGameShortName",
-        botId: { _: "inputUserSelf" },
-        shortName: media.game
-      } : media.game
-    };
-  }
-  if (media.type === "invoice") {
-    return {
-      _: "inputMediaInvoice",
-      title: media.title,
-      description: media.description,
-      photo: typeof media.photo === "string" ? {
-        _: "inputWebDocument",
-        url: media.photo,
-        mimeType: "image/jpeg",
-        size: 0,
-        attributes: []
-      } : media.photo,
-      invoice: media.invoice,
-      payload: media.payload,
-      provider: media.token,
-      providerData: {
-        _: "dataJSON",
-        data: JSON.stringify(media.providerData)
-      },
-      startParam: media.startParam,
-      extendedMedia: media.extendedMedia ? await _normalizeInputMedia(client, media.extendedMedia, params) : void 0
-    };
-  }
-  if (media.type === "poll" || media.type === "quiz") {
-    const answers = await Promise.all(media.answers.map((ans) => {
-      if (typeof ans === "string") return { _: "inputPollAnswer", text: inputTextToTl(ans) };
-      if (isAnyPollAnswer(ans)) return ans;
-      if ("media" in ans && ans.media) {
-        return _normalizeInputMedia(client, ans.media, params, true).then((m) => ({
-          _: "inputPollAnswer",
-          text: inputTextToTl(ans.text),
-          media: m
-        }));
-      }
-      return {
-        _: "inputPollAnswer",
-        text: inputTextToTl(ans.text)
-      };
-    }));
-    let correct;
-    let solution;
-    let solutionEntities;
-    const [attachedMedia, solutionMedia] = await Promise.all([
-      media.attachedMedia ? _normalizeInputMedia(client, media.attachedMedia, params, true) : void 0,
-      media.type === "quiz" && media.solutionMedia ? _normalizeInputMedia(client, media.solutionMedia, params, true) : void 0
-    ]);
-    if (media.type === "quiz") {
-      let input2 = media.correct;
-      if (!Array.isArray(input2)) input2 = [input2];
-      correct = input2;
-      if (media.solution) {
-        [solution, solutionEntities] = await _normalizeInputText(client, media.solution);
-      }
-    }
-    return {
-      _: "inputMediaPoll",
-      attachedMedia,
-      solutionMedia,
-      poll: {
-        _: "poll",
-        closed: media.closed,
-        id: Long.ZERO,
-        publicVoters: media.public,
-        multipleChoice: media.multiple,
-        quiz: media.type === "quiz",
-        question: inputTextToTl(media.question),
-        answers,
-        closePeriod: media.closePeriod,
-        closeDate: normalizeDate(media.closeDate),
-        openAnswers: media.openAnswers,
-        revotingDisabled: media.disableRevoting,
-        shuffleAnswers: media.shuffleAnswers,
-        hideResultsUntilClose: media.hideResultsUntilClose,
-        hash: Long.ZERO
-      },
-      correctAnswers: correct,
-      solution,
-      solutionEntities
-    };
-  }
-  if (media.type === "story") {
-    return {
-      _: "inputMediaStory",
-      peer: await resolvePeer(client, media.peer),
-      id: media.id
-    };
-  }
-  if (media.type === "webpage") {
-    return {
-      _: "inputMediaWebPage",
-      forceLargeMedia: media.size === "large",
-      forceSmallMedia: media.size === "small",
-      optional: !media.required,
-      url: media.url
-    };
-  }
-  if (media.type === "paid") {
-    let medias;
-    if (Array.isArray(media.media)) {
-      medias = await Promise.all(media.media.map((m) => _normalizeInputMedia(client, m, params)));
-    } else {
-      medias = [await _normalizeInputMedia(client, media.media, params)];
-    }
-    return {
-      _: "inputMediaPaidMedia",
-      starsAmount: Long.isLong(media.starsAmount) ? media.starsAmount : Long.fromNumber(media.starsAmount),
-      extendedMedia: medias,
-      payload: media.payload
-    };
-  }
-  if (media.type === "todo") {
-    return {
-      _: "inputMediaTodo",
-      todo: {
-        _: "todoList",
-        othersCanAppend: media.othersCanAppend,
-        othersCanComplete: media.othersCanComplete,
-        title: inputTextToTl(media.title),
-        list: media.items.map((it, idx) => ({
-          _: "todoItem",
-          id: idx,
-          title: inputTextToTl(it)
-        }))
-      }
-    };
-  }
-  let inputFile;
-  let thumb;
-  let mime = "application/octet-stream";
-  const upload = async (file) => {
-    let sendMime;
-    if (media.type === "sticker") {
-      sendMime = media.isAnimated ? "application/x-tgsticker" : "image/webp";
-    } else {
-      sendMime = media.fileMime;
-    }
-    const uploaded = await uploadFile(client, {
-      file,
-      progressCallback: params.progressCallback,
-      fileName: media.fileName,
-      fileMime: sendMime,
-      fileSize: media.fileSize,
-      requireFileSize: media.type === "photo",
-      requireExtension: media.type === "photo",
-      abortSignal: params.abortSignal
-    });
-    inputFile = uploaded.inputFile;
-    mime = uploaded.mime;
-  };
-  let videoCover;
-  if (media.type === "video" && media.cover) {
-    const inputMedia = await _normalizeInputMedia(client, media.cover, params);
-    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaPhoto");
-    videoCover = inputMedia.id;
-  }
-  let livePhotoVideo;
-  if (media.type === "photo" && media.livePhotoVideo) {
-    const inputMedia = await _normalizeInputMedia(client, media.livePhotoVideo, params, true);
-    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaDocument");
-    livePhotoVideo = inputMedia.id;
-  }
-  const uploadPeer = params.uploadPeer ?? { _: "inputPeerSelf" };
-  const uploadMediaIfNeeded = async (inputMedia, photo) => {
-    if (!uploadMedia) return inputMedia;
-    const res = await client.call({
-      _: "messages.uploadMedia",
-      peer: uploadPeer,
-      media: inputMedia,
-      businessConnectionId: params.businessConnectionId
-    }, { abortSignal: params.abortSignal });
-    if (photo) {
-      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaPhoto");
-      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.photo, "photo");
-      return {
-        _: "inputMediaPhoto",
-        id: {
-          _: "inputPhoto",
-          id: res.photo.id,
-          accessHash: res.photo.accessHash,
-          fileReference: res.photo.fileReference
-        },
-        ttlSeconds: media.ttlSeconds,
-        spoiler: media.type === "video" && media.spoiler,
-        livePhoto: Boolean(livePhotoVideo),
-        video: livePhotoVideo
-      };
-    }
-    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaDocument");
-    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.document, "document");
-    return {
-      _: "inputMediaDocument",
-      id: {
-        _: "inputDocument",
-        id: res.document.id,
-        accessHash: res.document.accessHash,
-        fileReference: res.document.fileReference
-      },
-      ttlSeconds: media.ttlSeconds,
-      spoiler: media.type === "video" && media.spoiler,
-      videoCover,
-      videoTimestamp: media.type === "video" ? media.timestamp : void 0
-    };
-  };
-  const input = media.file;
-  if (isFileIdLike(input)) {
-    const spoiler = (media.type === "video" || media.type === "photo") && media.spoiler;
-    if (typeof input === "string" && input.match(/^https?:\/\//)) {
-      return uploadMediaIfNeeded(
-        {
-          _: media.type === "photo" ? "inputMediaPhotoExternal" : "inputMediaDocumentExternal",
-          url: input,
-          ttlSeconds: media.ttlSeconds,
-          spoiler
-        },
-        media.type === "photo"
-      );
-    } else if (typeof input === "string" && input.match(/^file:/)) {
-      await upload(input.substring(5));
-    } else {
-      const parsed = typeof input === "string" ? parseFileId(input) : input;
-      if (parsed.location._ === "photo") {
-        return {
-          _: "inputMediaPhoto",
-          id: fileIdToInputPhoto(parsed),
-          ttlSeconds: media.ttlSeconds,
-          spoiler
-        };
-      } else if (parsed.location._ === "web") {
-        return uploadMediaIfNeeded(
-          {
-            _: parsed.type === FileType$1.Photo ? "inputMediaPhotoExternal" : "inputMediaDocumentExternal",
-            url: parsed.location.url,
-            ttlSeconds: media.ttlSeconds,
-            spoiler
-          },
-          parsed.type === FileType$1.Photo
-        );
-      }
-      return {
-        _: "inputMediaDocument",
-        id: fileIdToInputDocument(parsed),
-        ttlSeconds: media.ttlSeconds,
-        spoiler
-      };
-    }
-  } else if (typeof input === "object" && isAnyInputMedia(input)) {
-    return input;
-  } else if (isUploadedFile(input)) {
-    inputFile = input.inputFile;
-    mime = input.mime;
-  } else if (typeof input === "object" && isAnyInputFile(input)) {
-    inputFile = input;
-  } else {
-    await upload(input);
-  }
-  if (!inputFile) throw new Error("should not happen");
-  if (media.type === "photo") {
-    return uploadMediaIfNeeded(
-      {
-        _: "inputMediaUploadedPhoto",
-        file: inputFile,
-        livePhoto: Boolean(livePhotoVideo),
-        video: livePhotoVideo,
-        ttlSeconds: media.ttlSeconds,
-        spoiler: media.spoiler
-      },
-      true
-    );
-  }
-  if ("thumb" in media && media.thumb) {
-    thumb = await _normalizeInputFile(client, media.thumb, { abortSignal: params.abortSignal });
-  }
-  const attributes = [];
-  if (media.type !== "voice") {
-    attributes.push({
-      _: "documentAttributeFilename",
-      fileName: media.fileName || (inputFile._ === "inputFileStoryDocument" ? "story" : inputFile.name)
-    });
-  }
-  if (media.type === "video") {
-    const attr = {
-      _: "documentAttributeVideo",
-      duration: media.duration || 0,
-      w: media.width || 0,
-      h: media.height || 0,
-      supportsStreaming: media.supportsStreaming,
-      roundMessage: media.isRound
-    };
-    if (media.isRound) {
-      if (attr.w === 0) attr.w = 1;
-      if (attr.h === 0) attr.h = 1;
-      if (attr.duration === 0) attr.duration = 1;
-    }
-    attributes.push(attr);
-    if (media.isAnimated) {
-      attributes.push({ _: "documentAttributeAnimated" });
-    }
-  }
-  if (media.type === "audio" || media.type === "voice") {
-    attributes.push({
-      _: "documentAttributeAudio",
-      voice: media.type === "voice",
-      duration: media.duration || 0,
-      title: media.type === "audio" ? media.title : void 0,
-      performer: media.type === "audio" ? media.performer : void 0,
-      waveform: media.type === "voice" && media.waveform ? encodeWaveform(media.waveform) : void 0
-    });
-  }
-  if (media.type === "sticker") {
-    attributes.push({
-      _: "documentAttributeSticker",
-      stickerset: {
-        _: "inputStickerSetEmpty"
-      },
-      alt: media.alt ?? ""
-    });
-  }
-  return uploadMediaIfNeeded(
-    {
-      _: "inputMediaUploadedDocument",
-      nosoundVideo: media.type === "video" && !media.isAnimated,
-      forceFile: media.type === "document",
-      file: inputFile,
-      thumb,
-      mimeType: mime,
-      attributes,
-      ttlSeconds: media.ttlSeconds,
-      spoiler: media.type === "video" && media.spoiler,
-      videoTimestamp: media.type === "video" ? media.timestamp : void 0,
-      videoCover
-    },
-    false
-  );
 }
 
 async function uploadMedia(client, media, params = {}) {
@@ -85396,7 +88574,7 @@ async function editForumTopic(client, params) {
     peer: await resolvePeer(client, chatId),
     topicId: typeof topicId === "number" ? topicId : topicId.id,
     title,
-    iconEmojiId: icon ? icon ?? Long.ZERO : void 0,
+    iconEmojiId: icon === null ? Long.ZERO : icon,
     closed,
     hidden
   });
@@ -85410,7 +88588,11 @@ async function getForumTopicsById(client, chatId, ids) {
     peer: await resolvePeer(client, chatId),
     topics: ids
   });
-  return ForumTopic$2.parseTlForumTopics(res);
+  const index = /* @__PURE__ */ new Map();
+  for (const topic of ForumTopic$2.parseTlForumTopics(res)) {
+    index.set(topic.id, topic);
+  }
+  return ids.map((id) => index.get(id) ?? null);
 }
 
 const defaultOffset$4 = {
@@ -85509,8 +88691,8 @@ async function updateForumSettings(client, chatId, settings) {
 async function toggleGeneralTopicHidden(client, params) {
   const { chatId, hidden, shouldDispatch } = params;
   const res = await client.call({
-    _: "channels.editForumTopic",
-    channel: await resolveChannel(client, chatId),
+    _: "messages.editForumTopic",
+    peer: await resolvePeer(client, chatId),
     topicId: 1,
     hidden
   });
@@ -86490,6 +89672,34 @@ async function closePoll(client, params) {
   return new Poll$2(upd.poll, peers, upd.results);
 }
 
+async function createRichStreamingDraft(client, chatId, params) {
+  const { threadId, businessConnectionId, progressCallback } = params ?? {};
+  const randomId = randomLong();
+  const peer = await resolvePeer(client, chatId);
+  const uploadCache = params?.disableUploadCache ? void 0 : /* @__PURE__ */ new Map();
+  const sendDraft = async (content) => {
+    const richMessage = await _normalizeInputRichMessage(client, peer, content, { progressCallback, uploadCache });
+    const r = await client.call({
+      _: "messages.setTyping",
+      peer,
+      action: {
+        _: "inputSendMessageRichMessageDraftAction",
+        randomId,
+        richMessage
+      },
+      topMsgId: threadId
+    }, {
+      businessConnectionId
+    });
+    assertTrue("messages.setTyping", r);
+  };
+  return {
+    randomId,
+    send: sendDraft,
+    uploadCache
+  };
+}
+
 function joinTextWithEntities(parts, delim = "") {
   const textParts = [];
   const newEntities = [];
@@ -86863,11 +90073,12 @@ async function _processCommonSendParameters(client, chatId, params) {
     throw new MtArgumentError("replyTo/commentTo and replyToStory cannot be used together");
   }
   let tlReplyTo;
-  if (replyTo) {
+  if (replyTo || params.threadId) {
     tlReplyTo = {
       _: "inputReplyToMessage",
-      replyToMsgId: replyTo,
+      replyToMsgId: replyTo ?? params.threadId,
       replyToPeerId: replyToPeer,
+      topMsgId: params.threadId,
       quoteText: params.quote?.text,
       quoteEntities: params.quote?.entities,
       quoteOffset: params.quoteOffset,
@@ -87903,6 +91114,49 @@ async function sendMedia(client, chatId, media, params) {
   return msg;
 }
 
+function _inputReplyToToHeader(replyTo, peer) {
+  if (!replyTo) return [void 0, void 0];
+  switch (replyTo._) {
+    case "inputReplyToMessage": {
+      const replyToPeerId = replyTo.replyToPeerId && getMarkedPeerId(replyTo.replyToPeerId) !== getMarkedPeerId(peer) ? inputPeerToPeer(replyTo.replyToPeerId) : void 0;
+      return [
+        {
+          _: "messageReplyHeader",
+          replyToMsgId: replyTo.replyToMsgId,
+          replyToPeerId,
+          replyToTopId: replyTo.topMsgId,
+          quote: replyTo.quoteText !== void 0 ? true : void 0,
+          quoteText: replyTo.quoteText,
+          quoteEntities: replyTo.quoteEntities,
+          quoteOffset: replyTo.quoteOffset,
+          todoItemId: replyTo.todoItemId,
+          pollOption: replyTo.pollOption
+        },
+        replyTo.monoforumPeerId ? inputPeerToPeer(replyTo.monoforumPeerId) : void 0
+      ];
+    }
+    case "inputReplyToStory":
+      return [
+        {
+          _: "messageReplyStoryHeader",
+          peer: inputPeerToPeer(replyTo.peer),
+          storyId: replyTo.storyId
+        },
+        void 0
+      ];
+    case "inputReplyToMonoForum":
+      return [void 0, inputPeerToPeer(replyTo.monoforumPeerId)];
+    case "inputReplyToEphemeralMessage":
+      return [
+        {
+          _: "messageReplyHeader",
+          replyToEphemeral: true,
+          replyToMsgId: replyTo.id
+        },
+        void 0
+      ];
+  }
+}
 async function sendText(client, chatId, text, params) {
   if (!params) params = {};
   const [message, entities] = await _normalizeInputText(client, text);
@@ -87913,6 +91167,7 @@ async function sendText(client, chatId, text, params) {
     params
   );
   const randomId = params.randomId ?? randomLong();
+  const sendAs = params.sendAs ? await resolvePeer(client, params.sendAs) : void 0;
   const res = await client.call(
     {
       _: "messages.sendMessage",
@@ -87927,7 +91182,7 @@ async function sendText(client, chatId, text, params) {
       entities,
       clearDraft: params.clearDraft,
       noforwards: params.forbidForwards,
-      sendAs: params.sendAs ? await resolvePeer(client, params.sendAs) : void 0,
+      sendAs,
       invertMedia: params.invertMedia,
       quickReplyShortcut,
       effect: params.effect,
@@ -87941,16 +91196,25 @@ async function sendText(client, chatId, text, params) {
     }
   );
   if (res._ === "updateShortSentMessage") {
+    const [replyToHeader, savedPeerId] = _inputReplyToToHeader(replyTo, peer);
     const msg2 = {
       _: "message",
       id: res.id,
       peerId: inputPeerToPeer(peer),
-      fromId: { _: "peerUser", userId: client.storage.self.getCached().userId },
+      fromId: sendAs ? inputPeerToPeer(sendAs) : { _: "peerUser", userId: client.storage.self.getCached().userId },
+      savedPeerId,
+      replyTo: replyToHeader,
       message,
       date: res.date,
       out: res.out,
+      silent: params.silent,
+      noforwards: params.forbidForwards,
+      invertMedia: params.invertMedia,
+      effect: params.effect,
       replyMarkup,
-      entities: res.entities
+      media: res.media,
+      entities: res.entities,
+      ttlPeriod: res.ttlPeriod
     };
     if (!params.shouldDispatch) {
       client.handleClientUpdate(createDummyUpdate(res.pts, res.ptsCount));
@@ -87984,7 +91248,20 @@ async function sendText(client, chatId, text, params) {
           );
       }
     };
-    await Promise.all([fetchPeer(peer), fetchPeer(msg2.fromId)]);
+    const peersToFetch = [peer, msg2.fromId];
+    if (savedPeerId) peersToFetch.push(savedPeerId);
+    if (replyToHeader?._ === "messageReplyHeader" && replyToHeader.replyToPeerId) {
+      peersToFetch.push(replyToHeader.replyToPeerId);
+    } else if (replyToHeader?._ === "messageReplyStoryHeader") {
+      peersToFetch.push(replyToHeader.peer);
+    }
+    await Promise.all(peersToFetch.map(fetchPeer));
+    if (replyToHeader?._ === "messageReplyHeader" && replyToHeader.replyToTopId && replyToHeader.replyToTopId !== 1 && msg2.peerId._ === "peerChannel") {
+      const chat = peers.chats.get(msg2.peerId.channelId);
+      if (chat?._ === "channel" && chat.forum) {
+        replyToHeader.forumTopic = true;
+      }
+    }
     const ret = new Message$2(msg2, peers);
     return ret;
   }
@@ -88085,15 +91362,11 @@ async function sendCopyGroup(client, params) {
   return sendMediaGroup(
     client,
     toChatId,
-    msgs.map((msg) => {
-      const raw = msg.raw;
-      return {
-        type: "auto",
-        file: msg.media.inputMedia,
-        caption: raw.message,
-        entities: raw.entities
-      };
-    }),
+    msgs.map((msg) => ({
+      type: "auto",
+      file: msg.media.inputMedia,
+      caption: msg.textWithEntities
+    })),
     rest
   );
 }
@@ -88238,6 +91511,42 @@ async function sendReaction(client, params) {
   });
   assertIsUpdatesGroup("messages.sendReaction", res);
   return _findMessageInUpdate(client, res, true, !params.shouldDispatch, true);
+}
+
+async function sendRichMessage(client, chatId, params) {
+  const { peer, replyTo, scheduleDate, chainId, quickReplyShortcut } = await _processCommonSendParameters(
+    client,
+    chatId,
+    params
+  );
+  const richMessage = await _normalizeInputRichMessage(client, peer, params.content, params);
+  const randomId = params.randomId ?? randomLong();
+  const res = await client.call(
+    {
+      _: "messages.sendMessage",
+      peer,
+      silent: params.silent,
+      replyTo,
+      randomId,
+      scheduleDate,
+      replyMarkup: _convertToTl$2(params.replyMarkup),
+      message: "",
+      clearDraft: params.clearDraft,
+      noforwards: params.forbidForwards,
+      sendAs: params.sendAs ? await resolvePeer(client, params.sendAs) : void 0,
+      quickReplyShortcut,
+      effect: params.effect,
+      allowPaidFloodskip: params.allowPaidFloodskip,
+      allowPaidStars: params.allowPaidMessages,
+      richMessage
+    },
+    {
+      chainId,
+      abortSignal: params.abortSignal,
+      businessConnectionId: params.businessConnectionId
+    }
+  );
+  return _findMessageInUpdate(client, res, false, !params.shouldDispatch, false, randomId);
 }
 
 async function sendScheduled(client, peer, ids) {
@@ -90573,12 +93882,20 @@ class Conversation {
       state.pendingConversations.delete(this._chatId);
     }
     state.hasConversations = Boolean(state.pendingConversations.size);
+    const error = new MtcuteError("Conversation stopped");
+    for (const it of this._queuedNewMessage) this._rejectPending(it, error);
+    for (const it of this._pendingEditMessage.values()) this._rejectPending(it, error);
+    for (const it of this._pendingRead.values()) this._rejectPending(it, error);
     this._queuedNewMessage.clear();
     this._pendingNewMessages.clear();
     this._pendingEditMessage.clear();
     this._recentEdits.clear();
     this._pendingRead.clear();
     this._started = false;
+  }
+  _rejectPending(it, error) {
+    if (it.timeout) clearTimeoutWrap(it.timeout);
+    it.promise.reject(error);
   }
   _recordMessage(msg, incoming = false) {
     this._lastMessage = msg.id;
@@ -90860,130 +94177,53 @@ class Conversation {
   }
 }
 
-class BaseCallbackQuery {
+class EphemeralCallbackQuery {
   constructor(raw, _peers) {
     this.raw = raw;
     this._peers = _peers;
   }
-  /**
-   * ID of this callback query
-   */
+  /** ID of this callback query */
   get id() {
     return this.raw.queryId;
   }
-  /**
-   * User who has pressed the button
-   */
+  /** User who has pressed the button */
   get user() {
     return new User$2(this._peers.user(this.raw.userId));
   }
-  /**
-   * Unique ID, that represents the chat to which the inline
-   * message was sent. Does *not* contain actual chat ID.
-   */
-  get uniqueChatId() {
-    return this.raw.chatInstance;
+  /** Chat where the originating ephemeral message was sent */
+  get chat() {
+    return parsePeer(this.raw.peer, this._peers);
+  }
+  /** Identifier of the ephemeral message containing the button which was clicked */
+  get messageId() {
+    return this.raw.msgId;
+  }
+  /** The originating ephemeral message */
+  get message() {
+    return new EphemeralMessage$2(this.raw.message, this._peers);
   }
   /**
-   * Data that was contained in the callback button, if any
+   * Data that was contained in the callback button.
    *
    * Note that this field is defined by the client, and a bad
    * client can send arbitrary data in this field.
    */
   get data() {
-    return this.raw.data ?? null;
+    return this.raw.data;
   }
   /**
-   * Data that was contained in the callback button, if any,
+   * Data that was contained in the callback button,
    * parsed as a UTF8 string
    *
    * Note that this field is defined by the client, and a bad
    * client can send arbitrary data in this field.
    */
   get dataStr() {
-    if (!this.raw.data) return null;
     return decoder.decode(this.raw.data);
   }
-  /**
-   * In case this message was from {@link InputInlineResultGame},
-   * or the button was {@link BotKeyboard.game},
-   * short name of the game that should be returned.
-   */
-  get game() {
-    if (this.raw._ === "updateBusinessBotCallbackQuery") return null;
-    return this.raw.gameShortName ?? null;
-  }
 }
-class CallbackQuery extends BaseCallbackQuery {
-  constructor(raw, _peers) {
-    super(raw, _peers);
-    this.raw = raw;
-  }
-  /**
-   * Chat where the originating message was sent
-   */
-  get chat() {
-    if (this.raw._ !== "updateBotCallbackQuery") {
-      throw new MtArgumentError("Cannot get message id for inline callback");
-    }
-    return parsePeer(this.raw.peer, this._peers);
-  }
-  /**
-   * Identifier of the message containing the button which was clicked.
-   */
-  get messageId() {
-    return this.raw.msgId;
-  }
-}
-const CallbackQuery$1 = /* @__PURE__ */ memoizeGetters(CallbackQuery, ["user", "dataStr", "chat"]);
-const CallbackQuery$2 = /* @__PURE__ */ makeInspectable(CallbackQuery$1);
-class InlineCallbackQuery extends BaseCallbackQuery {
-  constructor(raw, _peers) {
-    super(raw, _peers);
-    this.raw = raw;
-  }
-  /**
-   * Identifier of the previously sent inline message,
-   * that contained the button which was clicked.
-   * This ID can be used in `TelegramClient.editInlineMessage`
-   */
-  get inlineMessageId() {
-    return this.raw.msgId;
-  }
-  /**
-   * Identifier of the previously sent inline message,
-   * that contained the button which was clicked,
-   * as a TDLib and Bot API compatible string.
-   * Can be used instead of {@link inlineMessageId} in
-   * case you want to store it in some storage.
-   */
-  get inlineMessageIdStr() {
-    return encodeInlineMessageId(this.raw.msgId);
-  }
-}
-const InlineCallbackQuery$1 = /* @__PURE__ */ memoizeGetters(InlineCallbackQuery, ["user", "dataStr", "inlineMessageIdStr"]);
-const InlineCallbackQuery$2 = /* @__PURE__ */ makeInspectable(InlineCallbackQuery$1);
-class BusinessCallbackQuery extends BaseCallbackQuery {
-  constructor(raw, _peers) {
-    super(raw, _peers);
-    this.raw = raw;
-  }
-  /** ID of the business connection */
-  get connectionId() {
-    return this.raw.connectionId;
-  }
-  /** Message containing the button */
-  get message() {
-    return new Message$2(this.raw.message, this._peers);
-  }
-  /** Message that {@link message} is a reply to (if any) */
-  get replyToMessage() {
-    if (!this.raw.replyToMessage) return null;
-    return new Message$2(this.raw.replyToMessage, this._peers);
-  }
-}
-const BusinessCallbackQuery$1 = /* @__PURE__ */ memoizeGetters(BusinessCallbackQuery, ["user", "dataStr", "message", "replyToMessage"]);
-const BusinessCallbackQuery$2 = /* @__PURE__ */ makeInspectable(BusinessCallbackQuery$1);
+const EphemeralCallbackQuery$1 = /* @__PURE__ */ memoizeGetters(EphemeralCallbackQuery, ["user", "chat", "message", "dataStr"]);
+const EphemeralCallbackQuery$2 = /* @__PURE__ */ makeInspectable(EphemeralCallbackQuery$1);
 
 class BotChatJoinRequestUpdate {
   constructor(raw, _peers) {
@@ -91035,6 +94275,35 @@ class BotChatJoinRequestUpdate {
 }
 const BotChatJoinRequestUpdate$1 = /* @__PURE__ */ memoizeGetters(BotChatJoinRequestUpdate, ["chat", "user", "invite"]);
 const BotChatJoinRequestUpdate$2 = /* @__PURE__ */ makeInspectable(BotChatJoinRequestUpdate$1);
+
+class BotGuestChatQuery {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /**
+   * Unique query ID
+   */
+  get id() {
+    return this.raw.queryId;
+  }
+  /**
+   * Message containing the query that was sent to the bot
+   */
+  get message() {
+    return new Message$2(this.raw.message, this._peers);
+  }
+  /** Message that {@link message} is a reply to, if available */
+  get replyToMessage() {
+    if (!this.message.replyToMessage || !this.raw.referenceMessages) return null;
+    if (!this.message.replyToMessage.originIs("same_chat")) return null;
+    const replyToId = this.message.replyToMessage.id;
+    const raw = this.raw.referenceMessages.find((it) => it.id === replyToId);
+    return raw ? new Message$2(raw, this._peers) : null;
+  }
+}
+const BotGuestChatQuery$1 = /* @__PURE__ */ memoizeGetters(BotGuestChatQuery, ["message", "replyToMessage"]);
+const BotGuestChatQuery$2 = /* @__PURE__ */ makeInspectable(BotGuestChatQuery$1);
 
 class BotReactionUpdate {
   constructor(raw, _peers) {
@@ -91166,6 +94435,131 @@ class BusinessMessage extends Message$2 {
     return this.update.replyToMessage ? new Message$2(this.update.replyToMessage, this._peers) : null;
   }
 }
+
+class BaseCallbackQuery {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /**
+   * ID of this callback query
+   */
+  get id() {
+    return this.raw.queryId;
+  }
+  /**
+   * User who has pressed the button
+   */
+  get user() {
+    return new User$2(this._peers.user(this.raw.userId));
+  }
+  /**
+   * Unique ID, that represents the chat to which the inline
+   * message was sent. Does *not* contain actual chat ID.
+   */
+  get uniqueChatId() {
+    return this.raw.chatInstance;
+  }
+  /**
+   * Data that was contained in the callback button, if any
+   *
+   * Note that this field is defined by the client, and a bad
+   * client can send arbitrary data in this field.
+   */
+  get data() {
+    return this.raw.data ?? null;
+  }
+  /**
+   * Data that was contained in the callback button, if any,
+   * parsed as a UTF8 string
+   *
+   * Note that this field is defined by the client, and a bad
+   * client can send arbitrary data in this field.
+   */
+  get dataStr() {
+    if (!this.raw.data) return null;
+    return decoder.decode(this.raw.data);
+  }
+  /**
+   * In case this message was from {@link InputInlineResultGame},
+   * or the button was {@link BotKeyboard.game},
+   * short name of the game that should be returned.
+   */
+  get game() {
+    if (this.raw._ === "updateBusinessBotCallbackQuery") return null;
+    return this.raw.gameShortName ?? null;
+  }
+}
+class CallbackQuery extends BaseCallbackQuery {
+  constructor(raw, _peers) {
+    super(raw, _peers);
+    this.raw = raw;
+  }
+  /**
+   * Chat where the originating message was sent
+   */
+  get chat() {
+    if (this.raw._ !== "updateBotCallbackQuery") {
+      throw new MtArgumentError("Cannot get message id for inline callback");
+    }
+    return parsePeer(this.raw.peer, this._peers);
+  }
+  /**
+   * Identifier of the message containing the button which was clicked.
+   */
+  get messageId() {
+    return this.raw.msgId;
+  }
+}
+const CallbackQuery$1 = /* @__PURE__ */ memoizeGetters(CallbackQuery, ["user", "dataStr", "chat"]);
+const CallbackQuery$2 = /* @__PURE__ */ makeInspectable(CallbackQuery$1);
+class InlineCallbackQuery extends BaseCallbackQuery {
+  constructor(raw, _peers) {
+    super(raw, _peers);
+    this.raw = raw;
+  }
+  /**
+   * Identifier of the previously sent inline message,
+   * that contained the button which was clicked.
+   * This ID can be used in `TelegramClient.editInlineMessage`
+   */
+  get inlineMessageId() {
+    return this.raw.msgId;
+  }
+  /**
+   * Identifier of the previously sent inline message,
+   * that contained the button which was clicked,
+   * as a TDLib and Bot API compatible string.
+   * Can be used instead of {@link inlineMessageId} in
+   * case you want to store it in some storage.
+   */
+  get inlineMessageIdStr() {
+    return encodeInlineMessageId(this.raw.msgId);
+  }
+}
+const InlineCallbackQuery$1 = /* @__PURE__ */ memoizeGetters(InlineCallbackQuery, ["user", "dataStr", "inlineMessageIdStr"]);
+const InlineCallbackQuery$2 = /* @__PURE__ */ makeInspectable(InlineCallbackQuery$1);
+class BusinessCallbackQuery extends BaseCallbackQuery {
+  constructor(raw, _peers) {
+    super(raw, _peers);
+    this.raw = raw;
+  }
+  /** ID of the business connection */
+  get connectionId() {
+    return this.raw.connectionId;
+  }
+  /** Message containing the button */
+  get message() {
+    return new Message$2(this.raw.message, this._peers);
+  }
+  /** Message that {@link message} is a reply to (if any) */
+  get replyToMessage() {
+    if (!this.raw.replyToMessage) return null;
+    return new Message$2(this.raw.replyToMessage, this._peers);
+  }
+}
+const BusinessCallbackQuery$1 = /* @__PURE__ */ memoizeGetters(BusinessCallbackQuery, ["user", "dataStr", "message", "replyToMessage"]);
+const BusinessCallbackQuery$2 = /* @__PURE__ */ makeInspectable(BusinessCallbackQuery$1);
 
 class ChatJoinRequestUpdate {
   constructor(raw, _peers) {
@@ -91431,6 +94825,23 @@ class DeleteBusinessMessageUpdate {
 }
 const DeleteBusinessMessageUpdate$1 = /* @__PURE__ */ makeInspectable(DeleteBusinessMessageUpdate);
 const DeleteBusinessMessageUpdate$2 = /* @__PURE__ */ memoizeGetters(DeleteBusinessMessageUpdate$1, ["chat"]);
+
+class DeleteEphemeralMessagesUpdate {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** Chat where the messages were deleted */
+  get chat() {
+    return parsePeer(this.raw.peer, this._peers);
+  }
+  /** IDs of the messages which were deleted */
+  get messageIds() {
+    return this.raw.ids;
+  }
+}
+const DeleteEphemeralMessagesUpdate$1 = /* @__PURE__ */ memoizeGetters(DeleteEphemeralMessagesUpdate, ["chat"]);
+const DeleteEphemeralMessagesUpdate$2 = /* @__PURE__ */ makeInspectable(DeleteEphemeralMessagesUpdate$1);
 
 class DeleteMessageUpdate {
   constructor(raw) {
@@ -91951,6 +95362,8 @@ class UserTypingUpdate {
     switch (this.raw.action._) {
       case "sendMessageTypingAction":
       case "sendMessageTextDraftAction":
+      case "inputSendMessageRichMessageDraftAction":
+      case "sendMessageRichMessageDraftAction":
         return "typing";
       case "sendMessageCancelAction":
         return "cancel";
@@ -92010,6 +95423,8 @@ function _parseUpdate({ update, peers }) {
       return { name: "chat_member", data: new ChatMemberUpdate$2(update, peers) };
     case "updateBotInlineQuery":
       return { name: "inline_query", data: new InlineQuery$2(update, peers) };
+    case "updateBotGuestChatQuery":
+      return { name: "bot_guest_chat_query", data: new BotGuestChatQuery$2(update, peers) };
     case "updateBotInlineSend":
       return { name: "chosen_inline_result", data: new ChosenInlineResult$2(update, peers) };
     case "updateBotCallbackQuery":
@@ -92068,6 +95483,14 @@ function _parseUpdate({ update, peers }) {
       return { name: "delete_business_message", data: new DeleteBusinessMessageUpdate$2(update, peers) };
     case "updateBusinessBotCallbackQuery":
       return { name: "business_callback_query", data: new BusinessCallbackQuery$2(update, peers) };
+    case "updateNewEphemeralMessage":
+      return { name: "new_ephemeral_message", data: new EphemeralMessage$2(update.message, peers) };
+    case "updateEditEphemeralMessage":
+      return { name: "edit_ephemeral_message", data: new EphemeralMessage$2(update.message, peers) };
+    case "updateDeleteEphemeralMessages":
+      return { name: "delete_ephemeral_messages", data: new DeleteEphemeralMessagesUpdate$2(update, peers) };
+    case "updateEphemeralBotCallbackQuery":
+      return { name: "ephemeral_callback_query", data: new EphemeralCallbackQuery$2(update, peers) };
     default:
       return null;
   }
@@ -92123,6 +95546,7 @@ let TelegramClient$1 = class TelegramClient {
     this.onDeleteMessage = new Emitter();
     this.onChatMemberUpdate = new Emitter();
     this.onInlineQuery = new Emitter();
+    this.onBotGuestChatQuery = new Emitter();
     this.onChosenInlineResult = new Emitter();
     this.onCallbackQuery = new Emitter();
     this.onInlineCallbackQuery = new Emitter();
@@ -92145,6 +95569,10 @@ let TelegramClient$1 = class TelegramClient {
     this.onEditBusinessMessage = new Emitter();
     this.onBusinessMessageGroup = new Emitter();
     this.onDeleteBusinessMessage = new Emitter();
+    this.onNewEphemeralMessage = new Emitter();
+    this.onEditEphemeralMessage = new Emitter();
+    this.onDeleteEphemeralMessages = new Emitter();
+    this.onEphemeralCallbackQuery = new Emitter();
     if ("client" in opts) {
       this._client = opts.client;
     } else {
@@ -92192,6 +95620,9 @@ let TelegramClient$1 = class TelegramClient {
                 break;
               case "inline_query":
                 this.onInlineQuery.emit(update.data);
+                break;
+              case "bot_guest_chat_query":
+                this.onBotGuestChatQuery.emit(update.data);
                 break;
               case "chosen_inline_result":
                 this.onChosenInlineResult.emit(update.data);
@@ -92259,6 +95690,18 @@ let TelegramClient$1 = class TelegramClient {
               case "delete_business_message":
                 this.onDeleteBusinessMessage.emit(update.data);
                 break;
+              case "new_ephemeral_message":
+                this.onNewEphemeralMessage.emit(update.data);
+                break;
+              case "edit_ephemeral_message":
+                this.onEditEphemeralMessage.emit(update.data);
+                break;
+              case "delete_ephemeral_messages":
+                this.onDeleteEphemeralMessages.emit(update.data);
+                break;
+              case "ephemeral_callback_query":
+                this.onEphemeralCallbackQuery.emit(update.data);
+                break;
             }
           }
         })
@@ -92307,6 +95750,9 @@ TelegramClient$1.prototype.start = function(...args) {
 };
 TelegramClient$1.prototype.isSelfPeer = function(...args) {
   return isSelfPeer(this._client, ...args);
+};
+TelegramClient$1.prototype.answerBotGuestChatQuery = function(...args) {
+  return answerBotGuestChatQuery(this._client, ...args);
 };
 TelegramClient$1.prototype.answerCallbackQuery = function(...args) {
   return answerCallbackQuery(this._client, ...args);
@@ -92533,6 +95979,39 @@ TelegramClient$1.prototype.unbanChatMember = function(...args) {
 TelegramClient$1.prototype.unrestrictChatMember = function(...args) {
   return unbanChatMember(this._client, ...args);
 };
+TelegramClient$1.prototype.banCommunityParticipant = function(...args) {
+  return banCommunityParticipant(this._client, ...args);
+};
+TelegramClient$1.prototype.unbanCommunityParticipant = function(...args) {
+  return unbanCommunityParticipant(this._client, ...args);
+};
+TelegramClient$1.prototype.createCommunity = function(...args) {
+  return createCommunity(this._client, ...args);
+};
+TelegramClient$1.prototype.getCommunityLinkRequests = function(...args) {
+  return getCommunityLinkRequests(this._client, ...args);
+};
+TelegramClient$1.prototype.getCommunityParticipantChats = function(...args) {
+  return getCommunityParticipantChats(this._client, ...args);
+};
+TelegramClient$1.prototype.getJoinedCommunities = function(...args) {
+  return getJoinedCommunities(this._client, ...args);
+};
+TelegramClient$1.prototype.hideCommunityLinkRequest = function(...args) {
+  return hideCommunityLinkRequest(this._client, ...args);
+};
+TelegramClient$1.prototype.hideAllCommunityLinkRequests = function(...args) {
+  return hideAllCommunityLinkRequests(this._client, ...args);
+};
+TelegramClient$1.prototype.linkCommunityPeer = function(...args) {
+  return linkCommunityPeer(this._client, ...args);
+};
+TelegramClient$1.prototype.unlinkCommunityPeer = function(...args) {
+  return unlinkCommunityPeer(this._client, ...args);
+};
+TelegramClient$1.prototype.toggleCommunityCollapsed = function(...args) {
+  return toggleCommunityCollapsed(this._client, ...args);
+};
 TelegramClient$1.prototype.addContact = function(...args) {
   return addContact(this._client, ...args);
 };
@@ -92580,6 +96059,18 @@ TelegramClient$1.prototype.joinChatlist = function(...args) {
 };
 TelegramClient$1.prototype.setFoldersOrder = function(...args) {
   return setFoldersOrder(this._client, ...args);
+};
+TelegramClient$1.prototype.deleteEphemeralMessage = function(...args) {
+  return deleteEphemeralMessage(this._client, ...args);
+};
+TelegramClient$1.prototype.editEphemeralMessage = function(...args) {
+  return editEphemeralMessage(this._client, ...args);
+};
+TelegramClient$1.prototype.getEphemeralCallbackAnswer = function(...args) {
+  return getEphemeralCallbackAnswer(this._client, ...args);
+};
+TelegramClient$1.prototype.sendEphemeralMessage = function(...args) {
+  return sendEphemeralMessage(this._client, ...args);
 };
 TelegramClient$1.prototype.downloadAsBuffer = function(...args) {
   return downloadAsBuffer(this._client, ...args);
@@ -92743,6 +96234,9 @@ TelegramClient$1.prototype.appendTodoList = function(...args) {
 TelegramClient$1.prototype.closePoll = function(...args) {
   return closePoll(this._client, ...args);
 };
+TelegramClient$1.prototype.createRichStreamingDraft = function(...args) {
+  return createRichStreamingDraft(this._client, ...args);
+};
 TelegramClient$1.prototype.createStreamingDraft = function(...args) {
   return createStreamingDraft(this._client, ...args);
 };
@@ -92904,6 +96398,9 @@ TelegramClient$1.prototype.replyMedia = function(...args) {
 };
 TelegramClient$1.prototype.replyMediaGroup = function(...args) {
   return replyMediaGroup(this._client, ...args);
+};
+TelegramClient$1.prototype.sendRichMessage = function(...args) {
+  return sendRichMessage(this._client, ...args);
 };
 TelegramClient$1.prototype.sendScheduled = function(...args) {
   return sendScheduled(this._client, ...args);
@@ -93871,6 +97368,7 @@ class BaseSqliteStorage {
 async function downloadToFile(client, filename, location, params) {
   if (location instanceof FileLocation$1 && ArrayBuffer.isView(location.location)) {
     await writeFile$1(filename, location.location);
+    return;
   }
   const output = createWriteStream(filename);
   if (params?.abortSignal) {
@@ -93880,22 +97378,15 @@ async function downloadToFile(client, filename, location, params) {
       rmSync(filename);
     });
   }
-  for await (const chunk of downloadAsIterable(client, location, params)) {
-    output.write(chunk);
+  try {
+    for await (const chunk of downloadAsIterable(client, location, params)) {
+      output.write(chunk);
+    }
+    output.end();
+  } catch (e) {
+    output.destroy();
+    throw e;
   }
-  output.end();
-}
-
-const NODE_VERSION = typeof process !== "undefined" && "node" in process.versions ? process.versions.node : null;
-const NODE_VERSION_TUPLE = NODE_VERSION != null ? /* @__PURE__ */ NODE_VERSION.split(".").map(Number) : null;
-function isNodeVersionAfter(major, minor, patch) {
-  if (!NODE_VERSION_TUPLE) return true;
-  const [a, b, c] = NODE_VERSION_TUPLE;
-  if (a > major) return true;
-  if (a < major) return false;
-  if (b > minor) return true;
-  if (b < minor) return false;
-  return c >= patch;
 }
 
 class NodeSocketConnection {
@@ -93976,19 +97467,36 @@ class TcpConnection extends NodeSocketConnection {
   }
 }
 
-function awaitConnect(socket) {
+function awaitConnect(socket, signal) {
   return new Promise((resolve, reject) => {
-    socket.on("error", reject);
-    socket.once("connect", () => {
-      socket.off("error", reject);
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onConnect() {
+      cleanup();
       resolve();
-    });
+    }
+    function onAbort() {
+      cleanup();
+      socket.destroy();
+      reject(signal?.reason);
+    }
+    function cleanup() {
+      socket.off("error", onError);
+      socket.off("connect", onConnect);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    signal?.addEventListener("abort", onAbort);
+    socket.on("error", onError);
+    socket.once("connect", onConnect);
   });
 }
-const connectTcp = async ({ address, port }) => {
+const connectTcp = async ({ address, port }, signal) => {
+  signal?.throwIfAborted();
   const socket = new Socket();
   socket.connect(port, address);
-  await awaitConnect(socket);
+  await awaitConnect(socket, signal);
   return new TcpConnection(socket);
 };
 
@@ -94041,7 +97549,7 @@ function nodeReadableToFuman(stream) {
 }
 
 function webReadableToNode(stream) {
-  if (typeof Readable.fromWeb === "function" && isNodeVersionAfter(18, 13, 0)) {
+  if (typeof Readable.fromWeb === "function") {
     return Readable.fromWeb(stream);
   }
   const reader = stream.getReader();
@@ -94221,7 +97729,7 @@ var hasRequiredBindings;
 function requireBindings () {
 	if (hasRequiredBindings) return bindings.exports;
 	hasRequiredBindings = 1;
-	(function (module, exports$1) {
+	(function (module, exports) {
 		var fs = fs__default,
 		  path = path$2,
 		  fileURLToPath = requireFileUriToPath(),
@@ -94299,7 +97807,7 @@ function requireBindings () {
 
 		  // Get the module root
 		  if (!opts.module_root) {
-		    opts.module_root = exports$1.getRoot(exports$1.getFileName());
+		    opts.module_root = exports.getRoot(exports.getFileName());
 		  }
 
 		  // Ensure the given bindings name ends with .node
@@ -94354,7 +97862,7 @@ function requireBindings () {
 		  err.tries = tries;
 		  throw err;
 		}
-		module.exports = exports$1 = bindings;
+		module.exports = exports = bindings;
 
 		/**
 		 * Gets the filename of the JavaScript file that invokes this function.
@@ -94362,7 +97870,7 @@ function requireBindings () {
 		 * Optionally accepts an filename argument to skip when searching for the invoking filename
 		 */
 
-		exports$1.getFileName = function getFileName(calling_file) {
+		exports.getFileName = function getFileName(calling_file) {
 		  var origPST = Error.prepareStackTrace,
 		    origSTL = Error.stackTraceLimit,
 		    dummy = {},
@@ -94411,7 +97919,7 @@ function requireBindings () {
 		 *   Out: /home/nate/node-native-module
 		 */
 
-		exports$1.getRoot = function getRoot(file) {
+		exports.getRoot = function getRoot(file) {
 		  var dir = dirname(file),
 		    prev;
 		  while (true) {
@@ -95429,8 +98937,11 @@ NodePlatform.prototype.beforeExit = beforeExit;
 NodePlatform.prototype.normalizeFile = normalizeFile;
 
 class TcpTransport {
-  connect(dc) {
-    return connectTcp({ address: dc.ipAddress, port: dc.port });
+  async connect(dc, abortSignal) {
+    const conn = await connectTcp({ address: dc.ipAddress, port: dc.port }, abortSignal);
+    conn.setNoDelay(true);
+    conn.setKeepAlive(true);
+    return conn;
   }
   packetCodec() {
     return new IntermediatePacketCodec();
