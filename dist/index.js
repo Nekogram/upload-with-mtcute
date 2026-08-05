@@ -99338,18 +99338,21 @@ async function run() {
         const chatId = getInput('chat-id');
         const patterns = getMultilineInput('files');
         // Resolve glob patterns into actual file paths
-        const filePaths = (await Promise.all(patterns.map((pattern) => glob(pattern, { nodir: true })))).flat();
+        const filePaths = (await Promise.all(patterns.map((pattern) => glob(pattern, { nodir: true, absolute: true }))))
+            .flat()
+            .sort((a, b) => path$1.basename(a).localeCompare(path$1.basename(b), undefined, {
+            numeric: true
+        }));
         if (filePaths.length === 0) {
             warning('No files matched the provided patterns.');
             return;
         }
         // Build media group
         const media = filePaths.map((filePath) => {
-            const fileBuffer = actualFS.readFileSync(filePath);
             const fileName = path$1.basename(filePath);
             return {
                 type: 'document',
-                file: fileBuffer,
+                file: 'file:' + filePath,
                 fileName
             };
         });
@@ -99359,8 +99362,13 @@ async function run() {
             }
         });
         info(`Sent ${media.length} files.`);
-        await tg.logOut();
-        await tg.destroy();
+        try {
+            await tg.logOut();
+            await tg.destroy();
+        }
+        catch (error) {
+            warning(`Error during logout/destroy: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
     catch (error) {
         // Fail the workflow run if an error occurs

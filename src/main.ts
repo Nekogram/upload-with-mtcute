@@ -1,8 +1,7 @@
 import * as core from '@actions/core'
 import { glob } from 'glob'
-import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { MemoryStorage, TelegramClient } from '@mtcute/node'
+import { InputMediaDocument, MemoryStorage, TelegramClient } from '@mtcute/node'
 import { NodeCryptoProvider } from '@mtcute/node/utils.js'
 import { IGE } from '@cryptography/aes'
 
@@ -63,9 +62,17 @@ export async function run(): Promise<void> {
     // Resolve glob patterns into actual file paths
     const filePaths = (
       await Promise.all(
-        patterns.map((pattern) => glob(pattern, { nodir: true }))
+        patterns.map((pattern) =>
+          glob(pattern, { nodir: true, absolute: true })
+        )
       )
-    ).flat()
+    )
+      .flat()
+      .sort((a, b) =>
+        path.basename(a).localeCompare(path.basename(b), undefined, {
+          numeric: true
+        })
+      )
 
     if (filePaths.length === 0) {
       core.warning('No files matched the provided patterns.')
@@ -74,14 +81,13 @@ export async function run(): Promise<void> {
 
     // Build media group
     const media = filePaths.map((filePath) => {
-      const fileBuffer = fs.readFileSync(filePath)
       const fileName = path.basename(filePath)
 
       return {
         type: 'document' as const,
-        file: fileBuffer,
+        file: 'file:' + filePath,
         fileName
-      }
+      } as InputMediaDocument
     })
 
     await tg.sendMediaGroup(chatId, media, {
@@ -94,8 +100,14 @@ export async function run(): Promise<void> {
 
     core.info(`Sent ${media.length} files.`)
 
-    await tg.logOut()
-    await tg.destroy()
+    try {
+      await tg.logOut()
+      await tg.destroy()
+    } catch (error) {
+      core.warning(
+        `Error during logout/destroy: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   } catch (error) {
     // Fail the workflow run if an error occurs
     if (error instanceof Error) core.setFailed(error.message)
