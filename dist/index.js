@@ -39,6 +39,7 @@ import { createWriteStream, rmSync, createReadStream, ReadStream } from 'node:fs
 import { realpath, readlink, readdir as readdir$1, lstat as lstat$1, writeFile as writeFile$1, readFile, stat as stat$1 } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { createInterface } from 'node:readline';
+import { pipeline } from 'node:stream/promises';
 import { createCipheriv, pbkdf2, createHash, createHmac, randomFillSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import * as os$1 from 'node:os';
@@ -2456,11 +2457,77 @@ function requireRequest$1 () {
 	    }
 	  }
 
-	  onUpgrade (statusCode, headers, socket) {
+	  /**
+	   * @param {number|null} statusCode
+	   * @param {Buffer[]|null} headers
+	   * @param {import('node:stream').Duplex} socket
+	   * @param {string} [statusText]
+	   */
+	  onUpgrade (statusCode, headers, socket, statusText = '') {
+	    this.onFinally();
+
 	    assert(!this.aborted);
 	    assert(!this.completed);
 
-	    return this[kHandler].onUpgrade(statusCode, headers, socket)
+	    if (statusCode !== null) {
+	      this.#publishUpgradeHeaders(statusCode, headers, statusText);
+	    }
+
+	    const result = this[kHandler].onUpgrade(statusCode, headers, socket);
+
+	    if (!this.aborted) {
+	      this.completed = true;
+	      if (statusCode !== null) {
+	        this.#publishUpgradeTrailers();
+	      }
+	    }
+
+	    return result
+	  }
+
+	  /**
+	   * @param {number} statusCode
+	   * @param {import('node:http2').IncomingHttpHeaders} headers
+	   * @param {(headers: import('node:http2').IncomingHttpHeaders) => Buffer[]} parseHeaders
+	   * @param {string} [statusText]
+	   */
+	  onUpgradeResponse (statusCode, headers, parseHeaders, statusText = '') {
+	    assert(!this.aborted);
+	    assert(this.completed);
+
+	    if (channels.headers.hasSubscribers) {
+	      this.#publishUpgradeHeaders(statusCode, parseHeaders(headers), statusText);
+	    }
+	    this.#publishUpgradeTrailers();
+	  }
+
+	  /**
+	   * @param {Error} error
+	   */
+	  onUpgradeError (error) {
+	    assert(!this.aborted);
+	    assert(this.completed);
+
+	    if (channels.error.hasSubscribers) {
+	      channels.error.publish({ request: this, error });
+	    }
+	  }
+
+	  /**
+	   * @param {number} statusCode
+	   * @param {Buffer[]} headers
+	   * @param {string} statusText
+	   */
+	  #publishUpgradeHeaders (statusCode, headers, statusText) {
+	    if (channels.headers.hasSubscribers) {
+	      channels.headers.publish({ request: this, response: { statusCode, headers, statusText } });
+	    }
+	  }
+
+	  #publishUpgradeTrailers () {
+	    if (channels.trailers.hasSubscribers) {
+	      channels.trailers.publish({ request: this, trailers: [] });
+	    }
 	  }
 
 	  onComplete (trailers) {
@@ -2690,6 +2757,7 @@ function requireDispatcherBase () {
 	if (hasRequiredDispatcherBase) return dispatcherBase;
 	hasRequiredDispatcherBase = 1;
 
+	const buffer = require$$0;
 	const Dispatcher = requireDispatcher();
 	const {
 	  ClientDestroyedError,
@@ -2702,6 +2770,7 @@ function requireDispatcherBase () {
 	const kOnClosed = Symbol('onClosed');
 	const kInterceptedDispatch = Symbol('Intercepted Dispatch');
 	const kWebSocketOptions = Symbol('webSocketOptions');
+	const kEventSourceOptions = Symbol('eventSourceOptions');
 
 	class DispatcherBase extends Dispatcher {
 	  constructor (opts) {
@@ -2712,12 +2781,19 @@ function requireDispatcherBase () {
 	    this[kClosed] = false;
 	    this[kOnClosed] = [];
 	    this[kWebSocketOptions] = opts?.webSocket ?? {};
+	    this[kEventSourceOptions] = opts?.eventSource ?? {};
 	  }
 
 	  get webSocketOptions () {
 	    return {
 	      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
 	      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024
+	    }
+	  }
+
+	  get eventSourceOptions () {
+	    return {
+	      maxEventSize: this[kEventSourceOptions].maxEventSize ?? buffer.kStringMaxLength
 	    }
 	  }
 
@@ -9043,7 +9119,7 @@ function requireClientH1 () {
 	  }
 
 	  onUpgrade (head) {
-	    const { upgrade, client, socket, headers, statusCode } = this;
+	    const { upgrade, client, socket, headers, statusCode, statusText } = this;
 
 	    assert(upgrade);
 	    assert(client[kSocket] === socket);
@@ -9078,9 +9154,10 @@ function requireClientH1 () {
 	    client.emit('disconnect', client[kUrl], [client], new InformationalError('upgrade'));
 
 	    try {
-	      request.onUpgrade(statusCode, headers, socket);
-	    } catch (err) {
-	      util.destroy(socket, err);
+	      request.onUpgrade(statusCode, headers, socket, statusText);
+	    } catch (error) {
+	      util.errorRequest(client, request, error);
+	      util.destroy(socket, error);
 	    }
 
 	    client[kResume]();
@@ -9337,8 +9414,6 @@ function requireClientH1 () {
 	  socket[kParser] = new Parser(client, socket, llhttpInstance);
 
 	  addListener(socket, 'error', function (err) {
-	    assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID');
-
 	    const parser = this[kParser];
 
 	    // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
@@ -9487,7 +9562,7 @@ function requireClientH1 () {
 
 	function clearIdleSocketValidation (socket) {
 	  if (socket[kIdleSocketValidationTimeout]) {
-	    clearTimeout(socket[kIdleSocketValidationTimeout]);
+	    clearImmediate(socket[kIdleSocketValidationTimeout]);
 	    socket[kIdleSocketValidationTimeout] = null;
 	  }
 
@@ -9496,15 +9571,23 @@ function requireClientH1 () {
 
 	function scheduleIdleSocketValidation (client, socket) {
 	  socket[kIdleSocketValidation] = 1;
-	  socket[kIdleSocketValidationTimeout] = setTimeout(() => {
+	  // Yield to the check phase (after poll) so unsolicited bytes / FIN / RST
+	  // already pending on this idle keep-alive socket are processed before the
+	  // next request is written (GHSA-35p6-xmwp-9g52).
+	  //
+	  // setTimeout(0) pays Node's ~1ms timer floor on every sequential reuse
+	  // (#5493). setImmediate avoids that, but an *unref'd* Immediate lets poll
+	  // block for ~500ms when the event loop is otherwise idle (#5600 / #5606).
+	  // A ref'd Immediate both keeps the pending request alive and makes poll
+	  // return immediately — the hybrid those issues asked for.
+	  socket[kIdleSocketValidationTimeout] = setImmediate(() => {
 	    socket[kIdleSocketValidationTimeout] = null;
 	    socket[kIdleSocketValidation] = 2;
 
 	    if (client[kSocket] === socket && !socket.destroyed) {
 	      client[kResume]();
 	    }
-	  }, 0);
-	  socket[kIdleSocketValidationTimeout].unref?.();
+	  });
 	}
 
 	/**
@@ -9653,12 +9736,22 @@ function requireClientH1 () {
 	  const socket = client[kSocket];
 	  clearIdleSocketValidation(socket);
 
-	  const abort = (err) => {
-	    if (request.aborted || request.completed) {
+	  /**
+	   * @param {Error} [error]
+	   */
+	  const abort = (error) => {
+	    if (request.aborted) {
 	      return
 	    }
 
-	    util.errorRequest(client, request, err || new RequestAbortedError());
+	    if (request.completed) {
+	      if (request.upgrade || request.method === 'CONNECT') {
+	        util.destroy(socket, new InformationalError('aborted'));
+	      }
+	      return
+	    }
+
+	    util.errorRequest(client, request, error || new RequestAbortedError());
 
 	    util.destroy(body);
 	    util.destroy(socket, new InformationalError('aborted'));
@@ -10116,6 +10209,7 @@ function requireClientH2 () {
 	hasRequiredClientH2 = 1;
 
 	const assert = require$$0$1;
+	const { errorMonitor } = require$$8;
 	const { pipeline } = require$$0$2;
 	const util = requireUtil$8();
 	const {
@@ -10192,6 +10286,15 @@ function requireClientH2 () {
 	  return result
 	}
 
+	/**
+	 * @param {import('node:http2').IncomingHttpHeaders} headers
+	 * @returns {Buffer[]}
+	 */
+	function parseH2ResponseHeaders (headers) {
+	  const { [HTTP2_HEADER_STATUS]: _statusCode, ...realHeaders } = headers;
+	  return parseH2Headers(realHeaders)
+	}
+
 	async function connectH2 (client, socket) {
 	  client[kSocket] = socket;
 
@@ -10241,8 +10344,6 @@ function requireClientH2 () {
 	  socket[kHTTP2Session] = session;
 
 	  util.addListener(socket, 'error', function (err) {
-	    assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID');
-
 	    this[kError] = err;
 
 	    this[kClient][kOnError](err);
@@ -10316,8 +10417,6 @@ function requireClientH2 () {
 	}
 
 	function onHttp2SessionError (err) {
-	  assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID');
-
 	  this[kSocket][kError] = err;
 	  this[kClient][kOnError](err);
 	}
@@ -10412,22 +10511,32 @@ function requireClientH2 () {
 	  headers[HTTP2_HEADER_AUTHORITY] = host || `${hostname}${port ? `:${port}` : ''}`;
 	  headers[HTTP2_HEADER_METHOD] = method;
 
-	  const abort = (err) => {
-	    if (request.aborted || request.completed) {
+	  /**
+	   * @param {Error} [error]
+	   */
+	  const abort = (error) => {
+	    if (request.aborted) {
 	      return
 	    }
 
-	    err = err || new RequestAbortedError();
+	    if (request.completed) {
+	      if (method === 'CONNECT' && stream != null) {
+	        util.destroy(stream, error || new RequestAbortedError());
+	      }
+	      return
+	    }
 
-	    util.errorRequest(client, request, err);
+	    error = error || new RequestAbortedError();
+
+	    util.errorRequest(client, request, error);
 
 	    if (stream != null) {
-	      util.destroy(stream, err);
+	      util.destroy(stream, error);
 	    }
 
 	    // We do not destroy the socket as we can continue using the session
 	    // the stream get's destroyed and the session remains to create new streams
-	    util.destroy(body, err);
+	    util.destroy(body, error);
 	    client[kQueue][client[kRunningIdx]++] = null;
 	    client[kResume]();
 	  };
@@ -10446,25 +10555,57 @@ function requireClientH2 () {
 
 	  if (method === 'CONNECT') {
 	    session.ref();
-	    // We are already connected, streams are pending, first request
-	    // will create a new stream. We trigger a request to create the stream and wait until
-	    // `ready` event is triggered
 	    // We disabled endStream to allow the user to write to the stream
 	    stream = session.request(headers, { endStream: false, signal });
+	    let upgradeResponseFinished = false;
 
-	    if (stream.id && !stream.pending) {
-	      request.onUpgrade(null, null, stream);
-	      ++session[kOpenStreams];
-	      client[kQueue][client[kRunningIdx]++] = null;
-	    } else {
-	      stream.once('ready', () => {
+	    /**
+	     * @param {import('node:http2').IncomingHttpHeaders} headers
+	     */
+	    const onResponse = (headers) => {
+	      upgradeResponseFinished = true;
+	      stream.off(errorMonitor, onUpgradeError);
+	      request.onUpgradeResponse(Number(headers[HTTP2_HEADER_STATUS]), headers, parseH2ResponseHeaders);
+	    };
+
+	    /**
+	     * @param {Error} error
+	     */
+	    const onUpgradeError = (error) => {
+	      upgradeResponseFinished = true;
+	      stream.off('response', onResponse);
+	      request.onUpgradeError(error);
+	    };
+
+	    const onReady = () => {
+	      try {
 	        request.onUpgrade(null, null, stream);
-	        ++session[kOpenStreams];
-	        client[kQueue][client[kRunningIdx]++] = null;
-	      });
-	    }
+	      } catch (error) {
+	        stream.off('response', onResponse);
+	        abort(error);
+	        return
+	      }
+
+	      if (request.aborted) {
+	        return
+	      }
+
+	      stream.off('error', abort);
+	      stream.once(errorMonitor, onUpgradeError);
+	      client[kQueue][client[kRunningIdx]++] = null;
+	    };
+
+	    stream.once('response', onResponse);
+	    stream.once('error', abort);
+	    ++session[kOpenStreams];
+	    onReady();
 
 	    stream.once('close', () => {
+	      if (!upgradeResponseFinished && request.completed) {
+	        stream.off('response', onResponse);
+	        stream.off(errorMonitor, onUpgradeError);
+	        request.onUpgradeError(new InformationalError(`HTTP/2: "stream error" received - code ${stream.rstCode}`));
+	      }
 	      session[kOpenStreams] -= 1;
 	      if (session[kOpenStreams] === 0) session.unref();
 	    });
@@ -11223,9 +11364,10 @@ function requireClient () {
 	    // h2
 	    maxConcurrentStreams,
 	    allowH2,
-	    webSocket
+	    webSocket,
+	    eventSource
 	  } = {}) {
-	    super({ webSocket });
+	    super({ webSocket, eventSource });
 
 	    if (keepAlive !== undefined) {
 	      throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
@@ -12470,7 +12612,7 @@ function requireAgent () {
 	}
 
 	class Agent extends DispatcherBase {
-	  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, ...options } = {}) {
+	  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, tls, ...options } = {}) {
 	    if (typeof factory !== 'function') {
 	      throw new InvalidArgumentError('factory must be a function.')
 	    }
@@ -12489,11 +12631,15 @@ function requireAgent () {
 	      connect = { ...connect };
 	    }
 
+	    if (tls && typeof tls !== 'function') {
+	      tls = { ...tls };
+	    }
+
 	    this[kInterceptors] = options.interceptors?.Agent && Array.isArray(options.interceptors.Agent)
 	      ? options.interceptors.Agent
 	      : [createRedirectInterceptor({ maxRedirections })];
 
-	    this[kOptions] = { ...util.deepClone(options), connect };
+	    this[kOptions] = { ...util.deepClone(options), connect, tls };
 	    this[kOptions].interceptors = options.interceptors
 	      ? { ...options.interceptors }
 	      : undefined;
@@ -13124,6 +13270,7 @@ function requireRetryHandler () {
 	    this.end = null;
 	    this.etag = null;
 	    this.resume = null;
+	    this.headersSent = false;
 
 	    // Handle possible onConnect duplication
 	    this.handler.onConnect(reason => {
@@ -13134,6 +13281,20 @@ function requireRetryHandler () {
 	        this.reason = reason;
 	      }
 	    });
+	  }
+
+	  checkpointResponseEnd (headers, resume) {
+	    if (this.end == null && this.opts.method !== 'HEAD') {
+	      const contentLength = headers['content-length'];
+	      this.end = contentLength != null ? Number(contentLength) - 1 : null;
+
+	      assert(
+	        this.end == null || Number.isFinite(this.end),
+	        'invalid content-length'
+	      );
+	    }
+
+	    this.resume = this.end != null ? resume : null;
 	  }
 
 	  onRequestSent () {
@@ -13224,7 +13385,12 @@ function requireRetryHandler () {
 	    this.retryCount += 1;
 
 	    if (statusCode >= 300) {
-	      if (this.retryOpts.statusCodes.includes(statusCode) === false) {
+	      // Only expose a response if no earlier attempt has reached the caller.
+	      // Otherwise abort this attempt so the error settles the existing body
+	      // instead of replacing it with a new response.
+	      if (!this.headersSent && this.retryOpts.statusCodes.includes(statusCode) === false) {
+	        this.headersSent = true;
+	        this.checkpointResponseEnd(headers, resume);
 	        return this.handler.onHeaders(
 	          statusCode,
 	          rawHeaders,
@@ -13293,8 +13459,15 @@ function requireRetryHandler () {
 
 	      const { start, size, end = size - 1 } = contentRange;
 
-	      assert(this.start === start, 'content-range mismatch');
-	      assert(this.end == null || this.end === end, 'content-range mismatch');
+	      if (this.start !== start || (this.end != null && this.end !== end)) {
+	        this.abort(
+	          new RequestRetryError('Content-Range mismatch', statusCode, {
+	            headers,
+	            data: { count: this.retryCount }
+	          })
+	        );
+	        return false
+	      }
 
 	      this.resume = resume;
 	      return true
@@ -13306,6 +13479,7 @@ function requireRetryHandler () {
 	        const range = parseRangeHeader(headers['content-range']);
 
 	        if (range == null) {
+	          this.headersSent = true;
 	          return this.handler.onHeaders(
 	            statusCode,
 	            rawHeaders,
@@ -13344,6 +13518,7 @@ function requireRetryHandler () {
 	      );
 
 	      this.resume = resume;
+	      this.headersSent = true;
 	      this.etag = headers.etag != null ? headers.etag : null;
 
 	      // Weak etags are not useful for comparison nor cache
@@ -13383,7 +13558,7 @@ function requireRetryHandler () {
 	  }
 
 	  onError (err) {
-	    if (this.aborted || isDisturbed(this.opts.body)) {
+	    if (this.aborted || isDisturbed(this.opts.body) || (this.headersSent && this.resume == null)) {
 	      return this.handler.onError(err)
 	    }
 
@@ -21007,8 +21182,10 @@ function requireFetch () {
 	  // 19. Run these steps in parallel:
 
 	  //    1. Run these steps, but abort when fetchParams is canceled:
-	  fetchParams.controller.onAborted = onAborted;
-	  fetchParams.controller.on('terminated', onAborted);
+	  if (!fetchParams.controller.resume) {
+	    fetchParams.controller.on('terminated', onAborted);
+	  }
+
 	  fetchParams.controller.resume = async () => {
 	    // 1. While true
 	    while (true) {
@@ -21177,8 +21354,6 @@ function requireFetch () {
 	          }
 	          location = headersList.get('location', true);
 
-	          this.body = new Readable({ read: resume });
-
 	          const decoders = [];
 
 	          const willFollow = location && request.redirect === 'follow' &&
@@ -21196,7 +21371,7 @@ function requireFetch () {
 	            // CVE fix similar to urllib3 (GHSA-gm62-xv2j-4w53) and curl (CVE-2022-32206).
 	            const maxContentEncodings = 5;
 	            if (codings.length > maxContentEncodings) {
-	              reject(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
+	              this.abort(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
 	              return true
 	            }
 
@@ -21228,6 +21403,8 @@ function requireFetch () {
 	              }
 	            }
 	          }
+
+	          this.body = new Readable({ read: resume });
 
 	          const onError = this.onError.bind(this);
 
@@ -21273,10 +21450,6 @@ function requireFetch () {
 	        onComplete () {
 	          if (this.abort) {
 	            fetchParams.controller.off('terminated', this.abort);
-	          }
-
-	          if (fetchParams.controller.onAborted) {
-	            fetchParams.controller.off('terminated', fetchParams.controller.onAborted);
 	          }
 
 	          fetchParams.controller.ended = true;
@@ -25530,7 +25703,7 @@ function requireConnection () {
 	        // is specified, the server needs to include the same field and one of
 	        // the selected subprotocol values in its response for the connection to
 	        // be established.
-	        if (!requestProtocols.includes(secProtocol)) {
+	        if (requestProtocols === null || !requestProtocols.includes(secProtocol)) {
 	          failWebsocketConnection(ws, 'Protocol was not set in the opening handshake.');
 	          return
 	        }
@@ -25777,7 +25950,12 @@ function requirePermessageDeflate () {
 
 	        if (this.#maxPayloadSize > 0 && this.#inflate[kLength] > this.#maxPayloadSize) {
 	          callback(new MessageSizeExceededError());
+	          // The inflater may still hold buffered input that can emit a late
+	          // zlib error. Remove the data listener, then deterministically stop
+	          // the stream so a subsequent 'error' cannot fire without a listener
+	          // (which would terminate the process as an unhandled error event).
 	          this.#inflate.removeAllListeners();
+	          this.#inflate.destroy();
 	          this.#inflate = null;
 	          return
 	        }
@@ -26071,6 +26249,20 @@ function requireReceiver () {
 	        if (isControlFrame(this.#info.opcode)) {
 	          this.#loop = this.parseControlFrame(body);
 	          this.#state = parserStates.INFO;
+
+	          // If the automatic PONG/CLOSE reply filled the socket's write buffer,
+	          // stop parsing and resume on drain so a PING flood cannot grow the
+	          // outbound queue without bound.
+	          const socket = this.ws[kResponse].socket;
+	          if (this.#loop && socket.writableNeedDrain) {
+	            this.#loop = false;
+	            socket.once('drain', () => {
+	              if (this.destroyed) return
+	              this.#loop = true;
+	              this.run(callback);
+	            });
+	            return
+	          }
 	        } else {
 	          if (!this.#info.compressed) {
 	            if (!this.writeFragments(body)) {
@@ -27102,6 +27294,7 @@ var hasRequiredEventsourceStream;
 function requireEventsourceStream () {
 	if (hasRequiredEventsourceStream) return eventsourceStream;
 	hasRequiredEventsourceStream = 1;
+	const buffer = require$$0;
 	const { Transform } = require$$0$2;
 	const { isASCIINumber, isValidLastEventId } = requireUtil$1();
 
@@ -27125,6 +27318,63 @@ function requireEventsourceStream () {
 	 * @type {32} SPACE
 	 */
 	const SPACE = 0x20;
+
+	const defaultMaxEventSize = buffer.kStringMaxLength;
+
+	const DATA = Buffer.from('data');
+	const EVENT = Buffer.from('event');
+	const ID = Buffer.from('id');
+	const RETRY = Buffer.from('retry');
+
+	// Each data field creates a string node, and each unconsumed input chunk keeps
+	// a Buffer wrapper. The absolute ceiling protects the large default byte limit.
+	const minParserItems = 1024;
+	const maxParserItems = 131072;
+	const bytesPerParserItem = 128;
+
+	function isASCIINumberBytes (buffer, start) {
+	  if (start >= buffer.length) {
+	    return false
+	  }
+
+	  for (let i = start; i < buffer.length; i++) {
+	    if (buffer[i] < 0x30 || buffer[i] > 0x39) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
+	function isValidLastEventIdBytes (buffer, start) {
+	  for (let i = start; i < buffer.length; i++) {
+	    if (buffer[i] === 0x00) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
+	function isFieldName (line, length, field) {
+	  if (length !== field.length) {
+	    return false
+	  }
+
+	  for (let i = 0; i < length; i++) {
+	    if (line[i] !== field[i]) {
+	      return false
+	    }
+	  }
+
+	  return true
+	}
+
+	function createMaxEventSizeExceededError () {
+	  const error = new Error('EventSource message size exceeded');
+	  error.aborted = false;
+	  return error
+	}
 
 	/**
 	 * @typedef {object} EventSourceStreamEvent
@@ -27166,11 +27416,21 @@ function requireEventsourceStream () {
 	  eventEndCheck = false
 
 	  /**
-	   * @type {Buffer}
+	   * @type {Buffer[]}
 	   */
-	  buffer = null
+	  chunks = []
 
+	  chunkIndex = 0
 	  pos = 0
+	  lineChunkIndex = 0
+	  linePos = 0
+	  lineLength = 0
+	  eventSize = 0
+	  eventFieldSizes = { data: 0, event: 0, id: 0, retry: 0 }
+	  dataLineCount = 0
+	  maxEventSize
+	  maxDataLines
+	  maxBufferedChunks
 
 	  event = {
 	    data: undefined,
@@ -27181,6 +27441,7 @@ function requireEventsourceStream () {
 
 	  /**
 	   * @param {object} options
+	   * @param {number} [options.maxEventSize]
 	   * @param {eventSourceSettings} options.eventSourceSettings
 	   * @param {Function} [options.push]
 	   */
@@ -27192,6 +27453,12 @@ function requireEventsourceStream () {
 	    super(options);
 
 	    this.state = options.eventSourceSettings || {};
+	    this.maxEventSize = options.maxEventSize ?? defaultMaxEventSize;
+	    const parserItemLimit = this.maxEventSize > 0
+	      ? Math.min(maxParserItems, Math.max(minParserItems, Math.floor(this.maxEventSize / bytesPerParserItem)))
+	      : 0;
+	    this.maxDataLines = parserItemLimit;
+	    this.maxBufferedChunks = parserItemLimit;
 	    if (options.push) {
 	      this.push = options.push;
 	    }
@@ -27209,92 +27476,28 @@ function requireEventsourceStream () {
 	      return
 	    }
 
-	    // Cache the chunk in the buffer, as the data might not be complete while
-	    // processing it
-	    // TODO: Investigate if there is a more performant way to handle
-	    // incoming chunks
-	    // see: https://github.com/nodejs/undici/issues/2630
-	    if (this.buffer) {
-	      this.buffer = Buffer.concat([this.buffer, chunk]);
-	    } else {
-	      this.buffer = chunk;
+	    // A leading line ending can immediately release the currently buffered
+	    // line, even when it uses the final allowed chunk slot.
+	    if (this.maxEventSize > 0 &&
+	        this.chunks.length >= this.maxBufferedChunks &&
+	        chunk[0] !== LF && chunk[0] !== CR) {
+	      callback(createMaxEventSizeExceededError());
+	      return
 	    }
+	    this.chunks.push(chunk);
 
 	    // Strip leading byte-order-mark if we opened the stream and started
 	    // the processing of the incoming data
 	    if (this.checkBOM) {
-	      switch (this.buffer.length) {
-	        case 1:
-	          // Check if the first byte is the same as the first byte of the BOM
-	          if (this.buffer[0] === BOM[0]) {
-	            // If it is, we need to wait for more data
-	            callback();
-	            return
-	          }
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          // BOM anymore
-	          this.checkBOM = false;
-
-	          // The buffer only contains one byte so we need to wait for more data
-	          callback();
-	          return
-	        case 2:
-	          // Check if the first two bytes are the same as the first two bytes
-	          // of the BOM
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1]
-	          ) {
-	            // If it is, we need to wait for more data, because the third byte
-	            // is needed to determine if it is the BOM or not
-	            callback();
-	            return
-	          }
-
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          // BOM anymore
-	          this.checkBOM = false;
-	          break
-	        case 3:
-	          // Check if the first three bytes are the same as the first three
-	          // bytes of the BOM
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1] &&
-	            this.buffer[2] === BOM[2]
-	          ) {
-	            // If it is, we can drop the buffered data, as it is only the BOM
-	            this.buffer = Buffer.alloc(0);
-	            // Set the checkBOM flag to false as we don't need to check for the
-	            // BOM anymore
-	            this.checkBOM = false;
-
-	            // Await more data
-	            callback();
-	            return
-	          }
-	          // If it is not the BOM, we can start processing the data
-	          this.checkBOM = false;
-	          break
-	        default:
-	          // The buffer is longer than 3 bytes, so we can drop the BOM if it is
-	          // present
-	          if (
-	            this.buffer[0] === BOM[0] &&
-	            this.buffer[1] === BOM[1] &&
-	            this.buffer[2] === BOM[2]
-	          ) {
-	            // Remove the BOM from the buffer
-	            this.buffer = this.buffer.subarray(3);
-	          }
-
-	          // Set the checkBOM flag to false as we don't need to check for the
-	          this.checkBOM = false;
-	          break
+	      if (this.handleBOM()) {
+	        callback();
+	        return
 	      }
 	    }
 
-	    while (this.pos < this.buffer.length) {
+	    while (this.hasCurrentByte()) {
+	      const byte = this.currentByte();
+
 	      // If the previous line ended with an end-of-line, we need to check
 	      // if the next character is also an end-of-line.
 	      if (this.eventEndCheck) {
@@ -27307,10 +27510,9 @@ function requireEventsourceStream () {
 	        if (this.crlfCheck) {
 	          // If the current character is a line feed, we can remove it
 	          // from the buffer and reset the crlfCheck flag
-	          if (this.buffer[this.pos] === LF) {
-	            this.buffer = this.buffer.subarray(this.pos + 1);
-	            this.pos = 0;
+	          if (byte === LF) {
 	            this.crlfCheck = false;
+	            this.consumeCurrentByte();
 
 	            // It is possible that the line feed is not the end of the
 	            // event. We need to check if the next character is an
@@ -27326,19 +27528,17 @@ function requireEventsourceStream () {
 	          this.crlfCheck = false;
 	        }
 
-	        if (this.buffer[this.pos] === LF || this.buffer[this.pos] === CR) {
+	        if (byte === LF || byte === CR) {
 	          // If the current character is a carriage return, we need to
 	          // set the crlfCheck flag to true, as we need to check if the
 	          // next character is a line feed so we can remove it from the
 	          // buffer
-	          if (this.buffer[this.pos] === CR) {
+	          if (byte === CR) {
 	            this.crlfCheck = true;
 	          }
 
-	          this.buffer = this.buffer.subarray(this.pos + 1);
-	          this.pos = 0;
-	          if (
-	            this.event.data !== undefined || this.event.event || this.event.id || this.event.retry) {
+	          this.consumeCurrentByte();
+	          if (this.hasPendingEvent()) {
 	            this.processEvent(this.event);
 	          }
 	          this.clearEvent();
@@ -27352,22 +27552,23 @@ function requireEventsourceStream () {
 
 	      // If the current character is an end-of-line, we can process the
 	      // line
-	      if (this.buffer[this.pos] === LF || this.buffer[this.pos] === CR) {
+	      if (byte === LF || byte === CR) {
 	        // If the current character is a carriage return, we need to
 	        // set the crlfCheck flag to true, as we need to check if the
 	        // next character is a line feed
-	        if (this.buffer[this.pos] === CR) {
+	        if (byte === CR) {
 	          this.crlfCheck = true;
 	        }
 
 	        // In any case, we can process the line as we reached an
 	        // end-of-line character
-	        this.parseLine(this.buffer.subarray(0, this.pos), this.event);
-
-	        // Remove the processed line from the buffer
-	        this.buffer = this.buffer.subarray(this.pos + 1);
-	        // Reset the position as we removed the processed line from the buffer
-	        this.pos = 0;
+	        try {
+	          this.parseLine(this.readLine(), this.event);
+	        } catch (error) {
+	          callback(error);
+	          return
+	        }
+	        this.consumeCurrentByte();
 	        // A line was processed and this could be the end of the event. We need
 	        // to check if the next line is empty to determine if the event is
 	        // finished.
@@ -27375,15 +27576,28 @@ function requireEventsourceStream () {
 	        continue
 	      }
 
-	      this.pos++;
+	      // readLine() is only called after CR or LF. Reject an unfinished line
+	      // before it can retain an unbounded number of decoded chunks. The seven
+	      // extra bytes allow the longest field prefix ("event: " or "retry: ").
+	      if (this.maxEventSize > 0 && ++this.lineLength > this.maxEventSize + 7) {
+	        callback(createMaxEventSizeExceededError());
+	        return
+	      }
+	      this.advanceCursor();
 	    }
 
 	    callback();
 	  }
 
+	  _destroy (error, callback) {
+	    this.chunks.length = 0;
+	    this.clearEvent();
+	    super._destroy(error, callback);
+	  }
+
 	  /**
 	   * @param {Buffer} line
-	   * @param {EventStreamEvent} event
+	   * @param {EventSourceStreamEvent} event
 	   */
 	  parseLine (line, event) {
 	    // If the line is empty (a blank line)
@@ -27400,65 +27614,72 @@ function requireEventsourceStream () {
 	      return
 	    }
 
-	    let field = '';
-	    let value = '';
+	    let fieldLength = line.length;
+	    let valueStart = line.length;
 
 	    // If the line contains a U+003A COLON character (:)
 	    if (colonPosition !== -1) {
-	      // Collect the characters on the line before the first U+003A COLON
-	      // character (:), and let field be that string.
-	      // TODO: Investigate if there is a more performant way to extract the
-	      // field
-	      // see: https://github.com/nodejs/undici/issues/2630
-	      field = line.subarray(0, colonPosition).toString('utf8');
+	      fieldLength = colonPosition;
 
 	      // Collect the characters on the line after the first U+003A COLON
 	      // character (:), and let value be that string.
 	      // If value starts with a U+0020 SPACE character, remove it from value.
-	      let valueStart = colonPosition + 1;
+	      valueStart = colonPosition + 1;
 	      if (line[valueStart] === SPACE) {
 	        ++valueStart;
 	      }
-	      // TODO: Investigate if there is a more performant way to extract the
-	      // value
-	      // see: https://github.com/nodejs/undici/issues/2630
-	      value = line.subarray(valueStart).toString('utf8');
-
-	      // Otherwise, the string is not empty but does not contain a U+003A COLON
-	      // character (:)
-	    } else {
-	      // Process the field using the steps described below, using the whole
-	      // line as the field name, and the empty string as the field value.
-	      field = line.toString('utf8');
-	      value = '';
 	    }
 
-	    // Modify the event with the field name and value. The value is also
-	    // decoded as UTF-8
-	    switch (field) {
-	      case 'data':
-	        if (event[field] === undefined) {
-	          event[field] = value;
-	        } else {
-	          event[field] += `\n${value}`;
-	        }
-	        break
-	      case 'retry':
-	        if (isASCIINumber(value)) {
-	          event[field] = value;
-	        }
-	        break
-	      case 'id':
-	        if (isValidLastEventId(value)) {
-	          event[field] = value;
-	        }
-	        break
-	      case 'event':
-	        if (value.length > 0) {
-	          event[field] = value;
-	        }
-	        break
+	    if (isFieldName(line, fieldLength, DATA)) {
+	      if (this.maxEventSize > 0 && this.dataLineCount >= this.maxDataLines) {
+	        throw createMaxEventSizeExceededError()
+	      }
+	      const valueBytes = line.length - valueStart;
+	      const dataSize = this.eventFieldSizes.data + (event.data === undefined ? 0 : 1) + valueBytes;
+	      this.setEventFieldSize('data', dataSize);
+
+	      const value = line.toString('utf8', valueStart);
+
+	      if (event.data === undefined) {
+	        event.data = value;
+	      } else {
+	        event.data += `\n${value}`;
+	      }
+	      this.dataLineCount++;
+	      return
 	    }
+
+	    if (isFieldName(line, fieldLength, RETRY)) {
+	      if (isASCIINumberBytes(line, valueStart)) {
+	        this.setEventFieldSize('retry', line.length - valueStart);
+	        event.retry = line.toString('utf8', valueStart);
+	      }
+	      return
+	    }
+
+	    if (isFieldName(line, fieldLength, ID)) {
+	      if (isValidLastEventIdBytes(line, valueStart)) {
+	        this.setEventFieldSize('id', line.length - valueStart);
+	        event.id = line.toString('utf8', valueStart);
+	      }
+	      return
+	    }
+
+	    if (isFieldName(line, fieldLength, EVENT)) {
+	      if (valueStart < line.length) {
+	        this.setEventFieldSize('event', line.length - valueStart);
+	        event.event = line.toString('utf8', valueStart);
+	      }
+	    }
+	  }
+
+	  setEventFieldSize (field, size) {
+	    const eventSize = this.eventSize - this.eventFieldSizes[field] + size;
+	    if (this.maxEventSize > 0 && eventSize > this.maxEventSize) {
+	      throw createMaxEventSizeExceededError()
+	    }
+	    this.eventSize = eventSize;
+	    this.eventFieldSizes[field] = size;
 	  }
 
 	  /**
@@ -27487,12 +27708,159 @@ function requireEventsourceStream () {
 	  }
 
 	  clearEvent () {
-	    this.event = {
-	      data: undefined,
-	      event: undefined,
-	      id: undefined,
-	      retry: undefined
-	    };
+	    this.event.data = undefined;
+	    this.event.event = undefined;
+	    this.event.id = undefined;
+	    this.event.retry = undefined;
+	    this.eventSize = 0;
+	    this.dataLineCount = 0;
+	    this.eventFieldSizes.data = 0;
+	    this.eventFieldSizes.event = 0;
+	    this.eventFieldSizes.id = 0;
+	    this.eventFieldSizes.retry = 0;
+	  }
+
+	  hasPendingEvent () {
+	    return this.event.data !== undefined ||
+	      this.event.event !== undefined ||
+	      this.event.id !== undefined ||
+	      this.event.retry !== undefined
+	  }
+
+	  hasCurrentByte () {
+	    return this.chunkIndex < this.chunks.length &&
+	      this.pos < this.chunks[this.chunkIndex].length
+	  }
+
+	  currentByte () {
+	    return this.chunks[this.chunkIndex][this.pos]
+	  }
+
+	  consumeCurrentByte () {
+	    this.advanceCursor();
+	    this.syncLineStartToCursor();
+	  }
+
+	  advanceCursor () {
+	    this.pos++;
+
+	    while (this.chunkIndex < this.chunks.length && this.pos >= this.chunks[this.chunkIndex].length) {
+	      this.chunkIndex++;
+	      this.pos = 0;
+	    }
+	  }
+
+	  syncLineStartToCursor () {
+	    this.lineChunkIndex = this.chunkIndex;
+	    this.linePos = this.pos;
+	    this.lineLength = 0;
+	    this.dropConsumedChunks();
+	  }
+
+	  dropConsumedChunks () {
+	    if (this.lineChunkIndex > 0) {
+	      const consumed = this.lineChunkIndex;
+	      this.chunks.splice(0, consumed);
+	      this.lineChunkIndex = 0;
+	      this.chunkIndex -= consumed;
+	    }
+
+	    if (this.chunkIndex === this.chunks.length) {
+	      this.chunks.length = 0;
+	      this.chunkIndex = 0;
+	      this.pos = 0;
+	      this.lineChunkIndex = 0;
+	      this.linePos = 0;
+	    }
+	  }
+
+	  readLine () {
+	    if (this.lineChunkIndex === this.chunkIndex) {
+	      return this.chunks[this.chunkIndex].subarray(this.linePos, this.pos)
+	    }
+
+	    const chunks = [];
+	    let length = 0;
+
+	    for (let i = this.lineChunkIndex; i <= this.chunkIndex; i++) {
+	      const chunk = this.chunks[i];
+	      const start = i === this.lineChunkIndex ? this.linePos : 0;
+	      const end = i === this.chunkIndex ? this.pos : chunk.length;
+	      const slice = chunk.subarray(start, end);
+	      length += slice.length;
+	      chunks.push(slice);
+	    }
+
+	    return Buffer.concat(chunks, length)
+	  }
+
+	  peekBufferedByte (offset) {
+	    let chunkIndex = this.lineChunkIndex;
+	    let pos = this.linePos;
+
+	    while (chunkIndex < this.chunks.length) {
+	      const chunk = this.chunks[chunkIndex];
+	      const remaining = chunk.length - pos;
+
+	      if (offset < remaining) {
+	        return chunk[pos + offset]
+	      }
+
+	      offset -= remaining;
+	      chunkIndex++;
+	      pos = 0;
+	    }
+	  }
+
+	  discardLeadingBytes (count) {
+	    while (count > 0 && this.lineChunkIndex < this.chunks.length) {
+	      const chunk = this.chunks[this.lineChunkIndex];
+	      const remaining = chunk.length - this.linePos;
+
+	      if (count < remaining) {
+	        this.linePos += count;
+	        count = 0;
+	      } else {
+	        count -= remaining;
+	        this.lineChunkIndex++;
+	        this.linePos = 0;
+	      }
+	    }
+
+	    this.chunkIndex = this.lineChunkIndex;
+	    this.pos = this.linePos;
+	    this.dropConsumedChunks();
+	  }
+
+	  handleBOM () {
+	    const first = this.peekBufferedByte(0);
+	    const second = this.peekBufferedByte(1);
+	    const third = this.peekBufferedByte(2);
+
+	    if (second === undefined) {
+	      if (first === BOM[0]) {
+	        return true
+	      }
+
+	      this.checkBOM = false;
+	      return true
+	    }
+
+	    if (third === undefined) {
+	      if (first === BOM[0] && second === BOM[1]) {
+	        return true
+	      }
+
+	      this.checkBOM = false;
+	      return false
+	    }
+
+	    if (first === BOM[0] && second === BOM[1] && third === BOM[2]) {
+	      this.discardLeadingBytes(3);
+	    }
+
+	    this.checkBOM = false;
+	    return !this.hasCurrentByte()
 	  }
 	}
 
@@ -27520,6 +27888,7 @@ function requireEventsource () {
 	const { delay } = requireUtil$1();
 	const { kEnumerableProperty } = requireUtil$8();
 	const { environmentSettingsObject } = requireUtil$7();
+	const { getGlobalDispatcher } = requireGlobal();
 
 	let experimentalWarned = false;
 
@@ -27801,6 +28170,7 @@ function requireEventsource () {
 
 	      const eventSourceStream = new EventSourceStream({
 	        eventSourceSettings: this.#state,
+	        maxEventSize: this.#dispatcher.eventSourceOptions?.maxEventSize,
 	        push: (event) => {
 	          this.dispatchEvent(createFastMessageEvent(
 	            event.type,
@@ -27979,7 +28349,8 @@ function requireEventsource () {
 	  },
 	  {
 	    key: 'dispatcher', // undici only
-	    converter: webidl.converters.any
+	    converter: webidl.converters.any,
+	    defaultValue: () => getGlobalDispatcher()
 	  }
 	]);
 
@@ -28512,6 +28883,26 @@ function requireBraceExpansion () {
 	// characters) so legitimate input is unaffected.
 	var EXPANSION_MAX_LENGTH = 4000000;
 
+	// `expand` recurses once per level of brace *nesting* - both when expanding a
+	// set's comma members and when re-wrapping a set whose body is a single part.
+	// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+	// level per chained group), which left nesting depth unbounded: about 3,100
+	// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+	// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+	// will follow nesting. It sits far above any realistic pattern and well below
+	// the depth at which the stack runs out.
+	var EXPANSION_MAX_DEPTH = 1000;
+
+	// Bash keeps a quirk where a brace group followed by a comma set still expands
+	// (`{a},b}`). The parser implements it by rewriting the string and restarting
+	// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+	// full passes over a string that itself grows by one `escClose` sentinel each
+	// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+	// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+	// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+	// times the scan may restart. Real `{a},b}` input needs a handful.
+	var EXPANSION_MAX_REWRITES = 1000;
+
 	function numeric(str) {
 	  return parseInt(str, 10) == str
 	    ? parseInt(str, 10)
@@ -28535,34 +28926,54 @@ function requireBraceExpansion () {
 	}
 
 
+	// Like `target.push(...items)` but doesn't overflow the stack
+	function pushAll(target, items) {
+	  for (var i = 0; i < items.length; i++) {
+	    target.push(items[i]);
+	  }
+	}
+
 	// Basically just str.split(","), but handling cases
 	// where we have nested braced sections, which should be
 	// treated as individual members, like {a,{b,c},d}
 	function parseCommaParts(str) {
-	  if (!str)
-	    return [''];
-
 	  var parts = [];
-	  var m = balanced('{', '}', str);
 
-	  if (!m)
-	    return str.split(',');
+	  // Walk the brace groups iteratively. Recursing on `post` once per group let a
+	  // chain of them exhaust the stack - the parsing-side counterpart to
+	  // the `expand` overflow fixed for CVE-2026-14257, and not something `max` or
+	  // `maxLength` can bound, since it happens before expansion.
+	  //
+	  // The part the next chunk continues
+	  var carry = '';
 
-	  var pre = m.pre;
-	  var body = m.body;
-	  var post = m.post;
-	  var p = pre.split(',');
+	  for (;;) {
+	    var m = balanced('{', '}', str);
 
-	  p[p.length-1] += '{' + body + '}';
-	  var postParts = parseCommaParts(post);
-	  if (post.length) {
-	    p[p.length-1] += postParts.shift();
-	    p.push.apply(p, postParts);
+	    if (!m) {
+	      var tail = str.split(',');
+	      tail[0] = carry + tail[0];
+	      pushAll(parts, tail);
+	      return parts;
+	    }
+
+	    var pre = m.pre;
+	    var body = m.body;
+	    var post = m.post;
+	    var p = pre.split(',');
+
+	    p[0] = carry + p[0];
+	    p[p.length-1] += '{' + body + '}';
+
+	    if (!post.length) {
+	      pushAll(parts, p);
+	      return parts;
+	    }
+
+	    carry = p.pop();
+	    pushAll(parts, p);
+	    str = post;
 	  }
-
-	  parts.push.apply(parts, p);
-
-	  return parts;
 	}
 
 	function expandTop(str, options) {
@@ -28572,6 +28983,8 @@ function requireBraceExpansion () {
 	  options = options || {};
 	  var max = options.max == null ? EXPANSION_MAX : options.max;
 	  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+	  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+	  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
 
 	  // I don't know why Bash 4.3 does this, but it does.
 	  // Anything starting with {} will have the first two bytes preserved
@@ -28583,7 +28996,7 @@ function requireBraceExpansion () {
 	    str = '\\{\\}' + str.substr(2);
 	  }
 
-	  return expand(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
+	  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
 	}
 
 	function embrace(str) {
@@ -28695,8 +29108,18 @@ function requireBraceExpansion () {
 	  str,
 	  max,
 	  maxLength,
+	  maxDepth,
+	  depth,
+	  maxRewrites,
 	  isTop
 	) {
+	  // Too deeply nested to keep following: treat the rest as literal, the same
+	  // way a group that cannot expand is already handled. Truncating rather than
+	  // throwing keeps expansion total, matching `max` and `maxLength`.
+	  if (depth > maxDepth) {
+	    return [str];
+	  }
+
 	  // Consume the string's top-level brace groups left to right, threading a
 	  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
 	  // rather than recursing on `m.post` once per group - keeps the native stack
@@ -28709,6 +29132,9 @@ function requireBraceExpansion () {
 	  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
 	  // is on the final strings, so it is applied to whichever `combine` produces
 	  // them (the one with no brace set left in the tail).
+	  // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+	  // re-reads the whole string, so leaving this unbounded is quadratic.
+	  var rewrites = 0;
 	  var dropEmpties = false;
 	  var firstGroup = true;
 
@@ -28744,7 +29170,8 @@ function requireBraceExpansion () {
 	    var isOptions = m.body.indexOf(',') >= 0;
 	    if (!isSequence && !isOptions) {
 	      // {a},b}
-	      if (m.post.match(/,(?!,).*\}/)) {
+	      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+	        rewrites++;
 	        str = m.pre + '{' + m.body + escClose + m.post;
 	        isTop = true;
 	        continue;
@@ -28772,7 +29199,7 @@ function requireBraceExpansion () {
 	      var n = parseCommaParts(m.body);
 	      if (n.length === 1 && n[0] !== undefined) {
 	        // x{{a,b}}y ==> x{a}y x{b}y
-	        n = expand(n[0], max, maxLength, false).map(embrace);
+	        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
 	        //XXX is this necessary? Can't seem to hit it in tests.
 	        /* c8 ignore start */
 	        if (n.length === 1) {
@@ -28806,7 +29233,7 @@ function requireBraceExpansion () {
 	      values = [];
 	      var valuesLength = 0;
 	      outer: for (var j = 0; j < n.length; j++) {
-	        var expanded = expand(n[j], max, maxLength, false);
+	        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false);
 	        for (var k = 0; k < expanded.length; k++) {
 	          var v = expanded[k];
 	          if (dropsEmpties && !v) continue
@@ -37062,36 +37489,50 @@ class Deque {
   }
 }
 
-class AsyncLock {
-  _queue = new Deque();
-  async acquire() {
-    let info;
-    while (info = this._queue.peekFront()) {
-      await info[0];
-    }
-    let unlock;
-    const prom = new Promise((resolve) => {
-      unlock = resolve;
-    });
-    this._queue.pushBack([prom, unlock]);
+class AsyncLockGuard {
+  constructor(_releaseLock) {
+    this._releaseLock = _releaseLock;
   }
+  _released = false;
+  /**
+   * Release the lock. Subsequent calls are no-op
+   */
   release() {
-    if (!this._queue.length) throw new Error("Nothing to release");
-    this._queue.popFront()[1]();
+    if (this._released) return;
+    this._released = true;
+    this._releaseLock();
   }
-  with(func) {
-    return (async () => {
-      let err = null;
-      await this.acquire();
-      try {
-        await func();
-      } catch (e) {
-        err = e;
-      } finally {
-        this.release();
-      }
-      if (err != null) throw err;
-    })();
+  [Symbol.dispose]() {
+    this.release();
+  }
+}
+class AsyncLock {
+  _locked = false;
+  _waiters = new Deque();
+  _release = () => {
+    const next = this._waiters.popFront();
+    if (next) {
+      next(new AsyncLockGuard(this._release));
+    } else {
+      this._locked = false;
+    }
+  };
+  async acquire() {
+    if (!this._locked) {
+      this._locked = true;
+      return new AsyncLockGuard(this._release);
+    }
+    return new Promise((resolve) => {
+      this._waiters.pushBack(resolve);
+    });
+  }
+  async with(func) {
+    const guard = await this.acquire();
+    try {
+      return await func();
+    } finally {
+      guard.release();
+    }
   }
 }
 
@@ -40129,6 +40570,19 @@ const defaultProductionIpv6Dc = {
     mediaOnly: true
   }
 };
+const defaultProductionFallbackDcs = [
+  { id: 1, ipAddress: "149.154.175.50", port: 443 },
+  { id: 2, ipAddress: "149.154.167.51", port: 443 },
+  { id: 2, ipAddress: "95.161.76.100", port: 443 },
+  { id: 3, ipAddress: "149.154.175.100", port: 443 },
+  { id: 4, ipAddress: "149.154.167.91", port: 443 },
+  { id: 5, ipAddress: "149.154.171.5", port: 443 },
+  { id: 1, ipAddress: "2001:b28:f23d:f001::a", port: 443, ipv6: true },
+  { id: 2, ipAddress: "2001:67c:4e8:f002::a", port: 443, ipv6: true },
+  { id: 3, ipAddress: "2001:b28:f23d:f003::a", port: 443, ipv6: true },
+  { id: 4, ipAddress: "2001:67c:4e8:f004::a", port: 443, ipv6: true },
+  { id: 5, ipAddress: "2001:b28:f23f:f005::a", port: 443, ipv6: true }
+];
 const defaultTestDc = {
   main: {
     ipAddress: "149.154.167.40",
@@ -40570,9 +41024,9 @@ var m$1 = {
   1704108455: function(r) {
     return { _: "chatForbidden", id: r.int53(), title: r.string() };
   },
-  3567203526: function(r) {
+  2060538432: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "channel", creator: !!(flags & 1), left: !!(flags & 4), broadcast: !!(flags & 32), verified: !!(flags & 128), megagroup: !!(flags & 256), restricted: !!(flags & 512), signatures: !!(flags & 2048), min: !!(flags & 4096), scam: !!(flags & 524288), hasLink: !!(flags & 1048576), hasGeo: !!(flags & 2097152), slowmodeEnabled: !!(flags & 4194304), callActive: !!(flags & 8388608), callNotEmpty: !!(flags & 16777216), fake: !!(flags & 33554432), gigagroup: !!(flags & 67108864), noforwards: !!(flags & 134217728), joinToSend: !!(flags & 268435456), joinRequest: !!(flags & 536870912), forum: !!(flags & 1073741824), storiesHidden: !!(flags2 & 2), storiesHiddenMin: !!(flags2 & 4), storiesUnavailable: !!(flags2 & 8), signatureProfiles: !!(flags2 & 4096), autotranslation: !!(flags2 & 32768), broadcastMessagesAllowed: !!(flags2 & 65536), monoforum: !!(flags2 & 131072), forumTabs: !!(flags2 & 524288), id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string(), username: flags & 64 ? r.string() : void 0, photo: r.object(), date: r.int(), restrictionReason: flags & 512 ? r.vector(r.object) : void 0, adminRights: flags & 16384 ? r.object() : void 0, bannedRights: flags & 32768 ? r.object() : void 0, defaultBannedRights: flags & 262144 ? r.object() : void 0, participantsCount: flags & 131072 ? r.int() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 16 ? r.object() : void 0, color: flags2 & 128 ? r.object() : void 0, profileColor: flags2 & 256 ? r.object() : void 0, emojiStatus: flags2 & 512 ? r.object() : void 0, level: flags2 & 1024 ? r.int() : void 0, subscriptionUntilDate: flags2 & 2048 ? r.int() : void 0, botVerificationIcon: flags2 & 8192 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, linkedMonoforumId: flags2 & 262144 ? r.int53() : void 0, linkedCommunityId: flags2 & 1048576 ? r.int53() : void 0 };
+    return { _: "channel", creator: !!(flags & 1), left: !!(flags & 4), broadcast: !!(flags & 32), verified: !!(flags & 128), megagroup: !!(flags & 256), restricted: !!(flags & 512), signatures: !!(flags & 2048), min: !!(flags & 4096), scam: !!(flags & 524288), hasLink: !!(flags & 1048576), hasGeo: !!(flags & 2097152), slowmodeEnabled: !!(flags & 4194304), callActive: !!(flags & 8388608), callNotEmpty: !!(flags & 16777216), fake: !!(flags & 33554432), gigagroup: !!(flags & 67108864), noforwards: !!(flags & 134217728), joinToSend: !!(flags & 268435456), joinRequest: !!(flags & 536870912), forum: !!(flags & 1073741824), storiesHidden: !!(flags2 & 2), storiesHiddenMin: !!(flags2 & 4), storiesUnavailable: !!(flags2 & 8), signatureProfiles: !!(flags2 & 4096), autotranslation: !!(flags2 & 32768), broadcastMessagesAllowed: !!(flags2 & 65536), monoforum: !!(flags2 & 131072), forumTabs: !!(flags2 & 524288), inNews: !!(flags2 & 2097152), id: r.int53(), accessHash: flags & 8192 ? r.long() : void 0, title: r.string(), username: flags & 64 ? r.string() : void 0, photo: r.object(), date: r.int(), restrictionReason: flags & 512 ? r.vector(r.object) : void 0, adminRights: flags & 16384 ? r.object() : void 0, bannedRights: flags & 32768 ? r.object() : void 0, defaultBannedRights: flags & 262144 ? r.object() : void 0, participantsCount: flags & 131072 ? r.int() : void 0, usernames: flags2 & 1 ? r.vector(r.object) : void 0, storiesMaxId: flags2 & 16 ? r.object() : void 0, color: flags2 & 128 ? r.object() : void 0, profileColor: flags2 & 256 ? r.object() : void 0, emojiStatus: flags2 & 512 ? r.object() : void 0, level: flags2 & 1024 ? r.int() : void 0, subscriptionUntilDate: flags2 & 2048 ? r.int() : void 0, botVerificationIcon: flags2 & 8192 ? r.long() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, linkedMonoforumId: flags2 & 262144 ? r.int53() : void 0, linkedCommunityId: flags2 & 1048576 ? r.int53() : void 0, pinnedMsgId: flags2 & 4194304 ? r.int() : void 0 };
   },
   399807445: function(r) {
     var flags = r.uint();
@@ -40588,11 +41042,11 @@ var m$1 = {
   },
   640893467: function(r) {
     var flags = r.uint();
-    return { _: "chatFull", canSetUsername: !!(flags & 128), hasScheduled: !!(flags & 256), translationsDisabled: !!(flags & 524288), id: r.int53(), about: r.string(), participants: r.object(), chatPhoto: flags & 4 ? r.object() : void 0, notifySettings: r.object(), exportedInvite: flags & 8192 ? r.object() : void 0, botInfo: flags & 8 ? r.vector(r.object) : void 0, pinnedMsgId: flags & 64 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, call: flags & 4096 ? r.object() : void 0, ttlPeriod: flags & 16384 ? r.int() : void 0, groupcallDefaultJoinAs: flags & 32768 ? r.object() : void 0, themeEmoticon: flags & 65536 ? r.string() : void 0, requestsPending: flags & 131072 ? r.int() : void 0, recentRequesters: flags & 131072 ? r.vector(r.long) : void 0, availableReactions: flags & 262144 ? r.object() : void 0, reactionsLimit: flags & 1048576 ? r.int() : void 0 };
+    return { _: "chatFull", canSetUsername: !!(flags & 128), hasScheduled: !!(flags & 256), translationsDisabled: !!(flags & 524288), hasWelcomeMessages: !!(flags & 2097152), id: r.int53(), about: r.string(), participants: r.object(), chatPhoto: flags & 4 ? r.object() : void 0, notifySettings: r.object(), exportedInvite: flags & 8192 ? r.object() : void 0, botInfo: flags & 8 ? r.vector(r.object) : void 0, pinnedMsgId: flags & 64 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, call: flags & 4096 ? r.object() : void 0, ttlPeriod: flags & 16384 ? r.int() : void 0, groupcallDefaultJoinAs: flags & 32768 ? r.object() : void 0, themeEmoticon: flags & 65536 ? r.string() : void 0, requestsPending: flags & 131072 ? r.int() : void 0, recentRequesters: flags & 131072 ? r.vector(r.long) : void 0, availableReactions: flags & 262144 ? r.object() : void 0, reactionsLimit: flags & 1048576 ? r.int() : void 0 };
   },
-  2689502522: function(r) {
+  3301236032: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "channelFull", canViewParticipants: !!(flags & 8), canSetUsername: !!(flags & 64), canSetStickers: !!(flags & 128), hiddenPrehistory: !!(flags & 1024), canSetLocation: !!(flags & 65536), hasScheduled: !!(flags & 524288), canViewStats: !!(flags & 1048576), blocked: !!(flags & 4194304), canDeleteChannel: !!(flags2 & 1), antispam: !!(flags2 & 2), participantsHidden: !!(flags2 & 4), translationsDisabled: !!(flags2 & 8), storiesPinnedAvailable: !!(flags2 & 32), viewForumAsMessages: !!(flags2 & 64), restrictedSponsored: !!(flags2 & 2048), canViewRevenue: !!(flags2 & 4096), paidMediaAllowed: !!(flags2 & 16384), canViewStarsRevenue: !!(flags2 & 32768), paidReactionsAvailable: !!(flags2 & 65536), stargiftsAvailable: !!(flags2 & 524288), paidMessagesAvailable: !!(flags2 & 1048576), id: r.int53(), about: r.string(), participantsCount: flags & 1 ? r.int() : void 0, adminsCount: flags & 2 ? r.int() : void 0, kickedCount: flags & 4 ? r.int() : void 0, bannedCount: flags & 4 ? r.int() : void 0, onlineCount: flags & 8192 ? r.int() : void 0, readInboxMaxId: r.int(), readOutboxMaxId: r.int(), unreadCount: r.int(), chatPhoto: r.object(), notifySettings: r.object(), exportedInvite: flags & 8388608 ? r.object() : void 0, botInfo: r.vector(r.object), migratedFromChatId: flags & 16 ? r.long() : void 0, migratedFromMaxId: flags & 16 ? r.int() : void 0, pinnedMsgId: flags & 32 ? r.int() : void 0, stickerset: flags & 256 ? r.object() : void 0, availableMinId: flags & 512 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, linkedChatId: flags & 16384 ? r.int53() : void 0, location: flags & 32768 ? r.object() : void 0, slowmodeSeconds: flags & 131072 ? r.int() : void 0, slowmodeNextSendDate: flags & 262144 ? r.int() : void 0, statsDc: flags & 4096 ? r.int() : void 0, pts: r.int(), call: flags & 2097152 ? r.object() : void 0, ttlPeriod: flags & 16777216 ? r.int() : void 0, pendingSuggestions: flags & 33554432 ? r.vector(r.string) : void 0, groupcallDefaultJoinAs: flags & 67108864 ? r.object() : void 0, themeEmoticon: flags & 134217728 ? r.string() : void 0, requestsPending: flags & 268435456 ? r.int() : void 0, recentRequesters: flags & 268435456 ? r.vector(r.int53) : void 0, defaultSendAs: flags & 536870912 ? r.object() : void 0, availableReactions: flags & 1073741824 ? r.object() : void 0, reactionsLimit: flags2 & 8192 ? r.int() : void 0, stories: flags2 & 16 ? r.object() : void 0, wallpaper: flags2 & 128 ? r.object() : void 0, boostsApplied: flags2 & 256 ? r.int() : void 0, boostsUnrestrict: flags2 & 512 ? r.int() : void 0, emojiset: flags2 & 1024 ? r.object() : void 0, botVerification: flags2 & 131072 ? r.object() : void 0, stargiftsCount: flags2 & 262144 ? r.int() : void 0, sendPaidMessagesStars: flags2 & 2097152 ? r.long() : void 0, mainTab: flags2 & 4194304 ? r.object() : void 0, guardBotId: flags2 & 8388608 ? r.int53() : void 0 };
+    return { _: "channelFull", canViewParticipants: !!(flags & 8), canSetUsername: !!(flags & 64), canSetStickers: !!(flags & 128), hiddenPrehistory: !!(flags & 1024), canSetLocation: !!(flags & 65536), hasScheduled: !!(flags & 524288), canViewStats: !!(flags & 1048576), blocked: !!(flags & 4194304), canDeleteChannel: !!(flags2 & 1), antispam: !!(flags2 & 2), participantsHidden: !!(flags2 & 4), translationsDisabled: !!(flags2 & 8), storiesPinnedAvailable: !!(flags2 & 32), viewForumAsMessages: !!(flags2 & 64), restrictedSponsored: !!(flags2 & 2048), canViewRevenue: !!(flags2 & 4096), paidMediaAllowed: !!(flags2 & 16384), canViewStarsRevenue: !!(flags2 & 32768), paidReactionsAvailable: !!(flags2 & 65536), stargiftsAvailable: !!(flags2 & 524288), paidMessagesAvailable: !!(flags2 & 1048576), hasWelcomeMessages: !!(flags2 & 16777216), id: r.int53(), about: r.string(), participantsCount: flags & 1 ? r.int() : void 0, adminsCount: flags & 2 ? r.int() : void 0, kickedCount: flags & 4 ? r.int() : void 0, bannedCount: flags & 4 ? r.int() : void 0, onlineCount: flags & 8192 ? r.int() : void 0, readInboxMaxId: r.int(), readOutboxMaxId: r.int(), unreadCount: r.int(), chatPhoto: r.object(), notifySettings: r.object(), exportedInvite: flags & 8388608 ? r.object() : void 0, botInfo: r.vector(r.object), migratedFromChatId: flags & 16 ? r.long() : void 0, migratedFromMaxId: flags & 16 ? r.int() : void 0, pinnedMsgId: flags & 32 ? r.int() : void 0, stickerset: flags & 256 ? r.object() : void 0, availableMinId: flags & 512 ? r.int() : void 0, folderId: flags & 2048 ? r.int() : void 0, linkedChatId: flags & 16384 ? r.int53() : void 0, location: flags & 32768 ? r.object() : void 0, slowmodeSeconds: flags & 131072 ? r.int() : void 0, slowmodeNextSendDate: flags & 262144 ? r.int() : void 0, statsDc: flags & 4096 ? r.int() : void 0, pts: r.int(), call: flags & 2097152 ? r.object() : void 0, ttlPeriod: flags & 16777216 ? r.int() : void 0, pendingSuggestions: flags & 33554432 ? r.vector(r.string) : void 0, groupcallDefaultJoinAs: flags & 67108864 ? r.object() : void 0, themeEmoticon: flags & 134217728 ? r.string() : void 0, requestsPending: flags & 268435456 ? r.int() : void 0, recentRequesters: flags & 268435456 ? r.vector(r.int53) : void 0, defaultSendAs: flags & 536870912 ? r.object() : void 0, availableReactions: flags & 1073741824 ? r.object() : void 0, reactionsLimit: flags2 & 8192 ? r.int() : void 0, stories: flags2 & 16 ? r.object() : void 0, wallpaper: flags2 & 128 ? r.object() : void 0, boostsApplied: flags2 & 256 ? r.int() : void 0, boostsUnrestrict: flags2 & 512 ? r.int() : void 0, emojiset: flags2 & 1024 ? r.object() : void 0, botVerification: flags2 & 131072 ? r.object() : void 0, stargiftsCount: flags2 & 262144 ? r.int() : void 0, sendPaidMessagesStars: flags2 & 2097152 ? r.long() : void 0, mainTab: flags2 & 4194304 ? r.object() : void 0, guardBotId: flags2 & 8388608 ? r.int53() : void 0, shareTheme: flags2 & 33554432 ? r.object() : void 0 };
   },
   3417810183: function(r) {
     var flags = r.uint();
@@ -40863,9 +41317,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messageActionStarGift", nameHidden: !!(flags & 1), saved: !!(flags & 4), converted: !!(flags & 8), upgraded: !!(flags & 32), refunded: !!(flags & 512), canUpgrade: !!(flags & 1024), prepaidUpgrade: !!(flags & 8192), upgradeSeparate: !!(flags & 65536), auctionAcquired: !!(flags & 131072), gift: r.object(), message: flags & 2 ? r.object() : void 0, convertStars: flags & 16 ? r.long() : void 0, upgradeMsgId: flags & 32 ? r.int() : void 0, upgradeStars: flags & 256 ? r.long() : void 0, fromId: flags & 2048 ? r.object() : void 0, peer: flags & 4096 ? r.object() : void 0, savedId: flags & 4096 ? r.long() : void 0, prepaidUpgradeHash: flags & 16384 ? r.string() : void 0, giftMsgId: flags & 32768 ? r.int() : void 0, toId: flags & 262144 ? r.object() : void 0, giftNum: flags & 524288 ? r.int() : void 0 };
   },
-  3871544610: function(r) {
+  2115768711: function(r) {
     var flags = r.uint();
-    return { _: "messageActionStarGiftUnique", upgrade: !!(flags & 1), transferred: !!(flags & 2), saved: !!(flags & 4), refunded: !!(flags & 32), prepaidUpgrade: !!(flags & 2048), assigned: !!(flags & 8192), fromOffer: !!(flags & 16384), craft: !!(flags & 65536), gift: r.object(), canExportAt: flags & 8 ? r.int() : void 0, transferStars: flags & 16 ? r.long() : void 0, fromId: flags & 64 ? r.object() : void 0, peer: flags & 128 ? r.object() : void 0, savedId: flags & 128 ? r.long() : void 0, resaleAmount: flags & 256 ? r.object() : void 0, canTransferAt: flags & 512 ? r.int() : void 0, canResellAt: flags & 1024 ? r.int() : void 0, dropOriginalDetailsStars: flags & 4096 ? r.long() : void 0, canCraftAt: flags & 32768 ? r.int() : void 0 };
+    return { _: "messageActionStarGiftUnique", upgrade: !!(flags & 1), transferred: !!(flags & 2), saved: !!(flags & 4), refunded: !!(flags & 32), prepaidUpgrade: !!(flags & 2048), assigned: !!(flags & 8192), fromOffer: !!(flags & 16384), craft: !!(flags & 65536), nameHidden: !!(flags & 131072), gift: r.object(), canExportAt: flags & 8 ? r.int() : void 0, transferStars: flags & 16 ? r.long() : void 0, fromId: flags & 64 ? r.object() : void 0, peer: flags & 128 ? r.object() : void 0, savedId: flags & 128 ? r.long() : void 0, resaleAmount: flags & 256 ? r.object() : void 0, canTransferAt: flags & 512 ? r.int() : void 0, canResellAt: flags & 1024 ? r.int() : void 0, dropOriginalDetailsStars: flags & 4096 ? r.long() : void 0, canCraftAt: flags & 32768 ? r.int() : void 0, message: flags & 262144 ? r.object() : void 0 };
   },
   2887720909: function(r) {
     return { _: "messageActionPaidMessagesRefunded", count: r.int(), stars: r.long() };
@@ -40935,6 +41389,20 @@ var m$1 = {
   1562426088: function(r) {
     var flags = r.uint();
     return { _: "messageActionChangeCommunity", communityId: flags & 1 ? r.int53() : void 0 };
+  },
+  1250688640: function(r) {
+    return { _: "messageActionChatJoinedViaCommunity", communityId: r.int53() };
+  },
+  2468997683: function(r) {
+    var flags = r.uint();
+    return { _: "messageActionGramTransfer", commentEncrypted: !!(flags & 2), amount: r.long(), peerAddress: r.string(), transactionId: r.string(), comment: flags & 1 ? r.string() : void 0 };
+  },
+  1773716671: function(r) {
+    var flags = r.uint();
+    return { _: "messageActionWalletTonConnectRequest", accepted: !!(flags & 4), declined: !!(flags & 8), sessionId: r.long(), expires: r.int(), topic: flags & 1 ? r.string() : void 0, traceId: flags & 2 ? r.string() : void 0, dappName: flags & 16 ? r.string() : void 0 };
+  },
+  3251827142: function(r) {
+    return { _: "messageActionNoPaidMessagesTokenUsed" };
   },
   4236900339: function(r) {
     var flags = r.uint();
@@ -41069,9 +41537,9 @@ var m$1 = {
   2663876157: function(r) {
     return { _: "inputReportReasonPersonalDetails" };
   },
-  114026053: function(r) {
+  3104582397: function(r) {
     var flags = r.uint(), flags2 = r.uint();
-    return { _: "userFull", blocked: !!(flags & 1), phoneCallsAvailable: !!(flags & 16), phoneCallsPrivate: !!(flags & 32), canPinMessage: !!(flags & 128), hasScheduled: !!(flags & 4096), videoCallsAvailable: !!(flags & 8192), voiceMessagesForbidden: !!(flags & 1048576), translationsDisabled: !!(flags & 8388608), storiesPinnedAvailable: !!(flags & 67108864), blockedMyStoriesFrom: !!(flags & 134217728), wallpaperOverridden: !!(flags & 268435456), contactRequirePremium: !!(flags & 536870912), readDatesPrivate: !!(flags & 1073741824), sponsoredEnabled: !!(flags2 & 128), canViewRevenue: !!(flags2 & 512), botCanManageEmojiStatus: !!(flags2 & 1024), displayGiftsButton: !!(flags2 & 65536), noforwardsMyEnabled: !!(flags2 & 8388608), noforwardsPeerEnabled: !!(flags2 & 16777216), unofficialSecurityRisk: !!(flags2 & 67108864), id: r.int53(), about: flags & 2 ? r.string() : void 0, settings: r.object(), personalPhoto: flags & 2097152 ? r.object() : void 0, profilePhoto: flags & 4 ? r.object() : void 0, fallbackPhoto: flags & 4194304 ? r.object() : void 0, notifySettings: r.object(), botInfo: flags & 8 ? r.object() : void 0, pinnedMsgId: flags & 64 ? r.int() : void 0, commonChatsCount: r.int(), folderId: flags & 2048 ? r.int() : void 0, ttlPeriod: flags & 16384 ? r.int() : void 0, theme: flags & 32768 ? r.object() : void 0, privateForwardName: flags & 65536 ? r.string() : void 0, botGroupAdminRights: flags & 131072 ? r.object() : void 0, botBroadcastAdminRights: flags & 262144 ? r.object() : void 0, wallpaper: flags & 16777216 ? r.object() : void 0, stories: flags & 33554432 ? r.object() : void 0, businessWorkHours: flags2 & 1 ? r.object() : void 0, businessLocation: flags2 & 2 ? r.object() : void 0, businessGreetingMessage: flags2 & 4 ? r.object() : void 0, businessAwayMessage: flags2 & 8 ? r.object() : void 0, businessIntro: flags2 & 16 ? r.object() : void 0, birthday: flags2 & 32 ? r.object() : void 0, personalChannelId: flags2 & 64 ? r.int53() : void 0, personalChannelMessage: flags2 & 64 ? r.int() : void 0, stargiftsCount: flags2 & 256 ? r.int() : void 0, starrefProgram: flags2 & 2048 ? r.object() : void 0, botVerification: flags2 & 4096 ? r.object() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, disallowedGifts: flags2 & 32768 ? r.object() : void 0, starsRating: flags2 & 131072 ? r.object() : void 0, starsMyPendingRating: flags2 & 262144 ? r.object() : void 0, starsMyPendingRatingDate: flags2 & 262144 ? r.int() : void 0, mainTab: flags2 & 1048576 ? r.object() : void 0, savedMusic: flags2 & 2097152 ? r.object() : void 0, note: flags2 & 4194304 ? r.object() : void 0, botManagerId: flags2 & 33554432 ? r.int53() : void 0 };
+    return { _: "userFull", blocked: !!(flags & 1), phoneCallsAvailable: !!(flags & 16), phoneCallsPrivate: !!(flags & 32), canPinMessage: !!(flags & 128), hasScheduled: !!(flags & 4096), videoCallsAvailable: !!(flags & 8192), voiceMessagesForbidden: !!(flags & 1048576), translationsDisabled: !!(flags & 8388608), storiesPinnedAvailable: !!(flags & 67108864), blockedMyStoriesFrom: !!(flags & 134217728), wallpaperOverridden: !!(flags & 268435456), contactRequirePremium: !!(flags & 536870912), readDatesPrivate: !!(flags & 1073741824), sponsoredEnabled: !!(flags2 & 128), canViewRevenue: !!(flags2 & 512), botCanManageEmojiStatus: !!(flags2 & 1024), displayGiftsButton: !!(flags2 & 65536), noforwardsMyEnabled: !!(flags2 & 8388608), noforwardsPeerEnabled: !!(flags2 & 16777216), unofficialSecurityRisk: !!(flags2 & 67108864), id: r.int53(), about: flags & 2 ? r.string() : void 0, settings: r.object(), personalPhoto: flags & 2097152 ? r.object() : void 0, profilePhoto: flags & 4 ? r.object() : void 0, fallbackPhoto: flags & 4194304 ? r.object() : void 0, notifySettings: r.object(), botInfo: flags & 8 ? r.object() : void 0, pinnedMsgId: flags & 64 ? r.int() : void 0, commonChatsCount: r.int(), folderId: flags & 2048 ? r.int() : void 0, ttlPeriod: flags & 16384 ? r.int() : void 0, theme: flags & 32768 ? r.object() : void 0, privateForwardName: flags & 65536 ? r.string() : void 0, botGroupAdminRights: flags & 131072 ? r.object() : void 0, botBroadcastAdminRights: flags & 262144 ? r.object() : void 0, wallpaper: flags & 16777216 ? r.object() : void 0, stories: flags & 33554432 ? r.object() : void 0, businessWorkHours: flags2 & 1 ? r.object() : void 0, businessLocation: flags2 & 2 ? r.object() : void 0, businessGreetingMessage: flags2 & 4 ? r.object() : void 0, businessAwayMessage: flags2 & 8 ? r.object() : void 0, businessIntro: flags2 & 16 ? r.object() : void 0, birthday: flags2 & 32 ? r.object() : void 0, personalChannelId: flags2 & 64 ? r.int53() : void 0, personalChannelMessage: flags2 & 64 ? r.int() : void 0, stargiftsCount: flags2 & 256 ? r.int() : void 0, starrefProgram: flags2 & 2048 ? r.object() : void 0, botVerification: flags2 & 4096 ? r.object() : void 0, sendPaidMessagesStars: flags2 & 16384 ? r.long() : void 0, disallowedGifts: flags2 & 32768 ? r.object() : void 0, starsRating: flags2 & 131072 ? r.object() : void 0, starsMyPendingRating: flags2 & 262144 ? r.object() : void 0, starsMyPendingRatingDate: flags2 & 262144 ? r.int() : void 0, mainTab: flags2 & 1048576 ? r.object() : void 0, savedMusic: flags2 & 2097152 ? r.object() : void 0, note: flags2 & 4194304 ? r.object() : void 0, botManagerId: flags2 & 33554432 ? r.int53() : void 0, walletCard: flags2 & 524288 ? r.object() : void 0, shareTheme: flags2 & 134217728 ? r.object() : void 0 };
   },
   341499403: function(r) {
     return { _: "contact", userId: r.int53(), mutual: r.boolean() };
@@ -41725,12 +42193,30 @@ var m$1 = {
   1270583041: function(r) {
     return { _: "updateEditEphemeralMessage", message: r.object() };
   },
-  2604140386: function(r) {
-    return { _: "updateEphemeralBotCallbackQuery", queryId: r.long(), userId: r.int53(), peer: r.object(), msgId: r.int(), data: r.bytes(), message: r.object() };
+  2081454550: function(r) {
+    var flags = r.uint();
+    return { _: "updateEphemeralBotCallbackQuery", queryId: r.long(), userId: r.int53(), peer: flags & 1 ? r.object() : void 0, msgId: r.int(), data: r.bytes(), chatInstance: flags & 2 ? r.long() : void 0, message: r.object() };
   },
   1812827683: function(r) {
     var flags = r.uint();
     return { _: "updateBotStarsSubscription", canceled: !!(flags & 1), paymentFailed: !!(flags & 2), restored: !!(flags & 4), userId: r.int53(), payload: r.bytes(), qts: r.int() };
+  },
+  1791226538: function(r) {
+    return { _: "updateWalletState", state: r.object() };
+  },
+  2973977930: function(r) {
+    var flags = r.uint();
+    return { _: "updateSentWalletTransaction", gasless: !!(flags & 1), msgHash: r.string(), transaction: flags & 2 ? r.object() : void 0 };
+  },
+  2829982892: function(r) {
+    var flags = r.uint();
+    return { _: "updateWalletGaslessInfo", available: !!(flags & 1), left: r.int(), resetAt: r.int(), minAmount: r.long(), relayerAddress: r.string() };
+  },
+  1352896014: function(r) {
+    return { _: "updateWalletTonConnectSession", session: r.object() };
+  },
+  3522068889: function(r) {
+    return { _: "updateWalletTonConnectPendingDisconnect", sessionIds: r.vector(r.long) };
   },
   2775329342: function(r) {
     return { _: "updates.state", pts: r.int(), qts: r.int(), date: r.int(), seq: r.int(), unreadCount: r.int() };
@@ -41951,14 +42437,20 @@ var m$1 = {
   3060109358: function(r) {
     return { _: "sendMessageEmojiInteractionSeen", emoticon: r.string() };
   },
-  929929052: function(r) {
-    return { _: "sendMessageTextDraftAction", randomId: r.long(), text: r.object() };
+  909162586: function(r) {
+    var flags = r.uint();
+    return { _: "sendMessageTextDraftAction", canStop: !!(flags & 1), keepOnStop: !!(flags & 2), randomId: r.long(), text: r.object() };
   },
-  3803331409: function(r) {
-    return { _: "inputSendMessageRichMessageDraftAction", randomId: r.long(), richMessage: r.object() };
+  2839005118: function(r) {
+    var flags = r.uint();
+    return { _: "inputSendMessageRichMessageDraftAction", canStop: !!(flags & 1), keepOnStop: !!(flags & 2), randomId: r.long(), richMessage: r.object() };
   },
-  2731222265: function(r) {
-    return { _: "sendMessageRichMessageDraftAction", randomId: r.long(), richMessage: r.object() };
+  1381386387: function(r) {
+    var flags = r.uint();
+    return { _: "sendMessageRichMessageDraftAction", canStop: !!(flags & 1), keepOnStop: !!(flags & 2), randomId: r.long(), richMessage: r.object() };
+  },
+  4227400368: function(r) {
+    return { _: "sendMessageStopDraftAction", randomId: r.long() };
   },
   3004386717: function(r) {
     return { _: "contacts.found", myResults: r.vector(r.object), results: r.vector(r.object), chats: r.vector(r.object), users: r.vector(r.object) };
@@ -42283,77 +42775,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "botInfo", hasPreviewMedias: !!(flags & 64), userId: flags & 1 ? r.int53() : void 0, description: flags & 2 ? r.string() : void 0, descriptionPhoto: flags & 16 ? r.object() : void 0, descriptionDocument: flags & 32 ? r.object() : void 0, commands: flags & 4 ? r.vector(r.object) : void 0, menuButton: flags & 8 ? r.object() : void 0, privacyPolicyUrl: flags & 128 ? r.string() : void 0, appSettings: flags & 256 ? r.object() : void 0, verifierSettings: flags & 512 ? r.object() : void 0 };
   },
-  2098662655: function(r) {
+  795322159: function(r) {
     var flags = r.uint();
-    return { _: "keyboardButton", style: flags & 1024 ? r.object() : void 0, text: r.string() };
-  },
-  3624674796: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonUrl", style: flags & 1024 ? r.object() : void 0, text: r.string(), url: r.string() };
-  },
-  3861629280: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonCallback", requiresPassword: !!(flags & 1), style: flags & 1024 ? r.object() : void 0, text: r.string(), data: r.bytes() };
-  },
-  1098841487: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonRequestPhone", style: flags & 1024 ? r.object() : void 0, text: r.string() };
-  },
-  2856384845: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonRequestGeoLocation", style: flags & 1024 ? r.object() : void 0, text: r.string() };
-  },
-  2568198652: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonSwitchInline", samePeer: !!(flags & 1), style: flags & 1024 ? r.object() : void 0, text: r.string(), query: r.string(), peerTypes: flags & 2 ? r.vector(r.object) : void 0 };
-  },
-  2311426297: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonGame", style: flags & 1024 ? r.object() : void 0, text: r.string() };
-  },
-  1067792645: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonBuy", style: flags & 1024 ? r.object() : void 0, text: r.string() };
-  },
-  4111468281: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonUrlAuth", style: flags & 1024 ? r.object() : void 0, text: r.string(), fwdText: flags & 1 ? r.string() : void 0, url: r.string(), buttonId: r.int() };
-  },
-  1744911986: function(r) {
-    var flags = r.uint();
-    return { _: "inputKeyboardButtonUrlAuth", requestWriteAccess: !!(flags & 1), style: flags & 1024 ? r.object() : void 0, text: r.string(), fwdText: flags & 2 ? r.string() : void 0, url: r.string(), bot: r.object() };
-  },
-  2047989634: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonRequestPoll", style: flags & 1024 ? r.object() : void 0, quiz: flags & 1 ? r.boolean() : void 0, text: r.string() };
-  },
-  2103314375: function(r) {
-    var flags = r.uint();
-    return { _: "inputKeyboardButtonUserProfile", style: flags & 1024 ? r.object() : void 0, text: r.string(), userId: r.object() };
-  },
-  3237829897: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonUserProfile", style: flags & 1024 ? r.object() : void 0, text: r.string(), userId: r.int53() };
-  },
-  3896947104: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonWebView", style: flags & 1024 ? r.object() : void 0, text: r.string(), url: r.string() };
-  },
-  3780920176: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonSimpleWebView", style: flags & 1024 ? r.object() : void 0, text: r.string(), url: r.string() };
-  },
-  1527715317: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonRequestPeer", style: flags & 1024 ? r.object() : void 0, text: r.string(), buttonId: r.int(), peerType: r.object(), maxQuantity: r.int() };
-  },
-  45580630: function(r) {
-    var flags = r.uint();
-    return { _: "inputKeyboardButtonRequestPeer", nameRequested: !!(flags & 1), usernameRequested: !!(flags & 2), photoRequested: !!(flags & 4), style: flags & 1024 ? r.object() : void 0, text: r.string(), buttonId: r.int(), peerType: r.object(), maxQuantity: r.int() };
-  },
-  3167006480: function(r) {
-    var flags = r.uint();
-    return { _: "keyboardButtonCopy", style: flags & 1024 ? r.object() : void 0, text: r.string(), copyText: r.string() };
+    return { _: "keyboardButton", style: flags & 1024 ? r.object() : void 0, text: r.string(), type: r.object() };
   },
   2002815875: function(r) {
     return { _: "keyboardButtonRow", buttons: r.vector(r.object) };
@@ -42368,10 +42792,11 @@ var m$1 = {
   },
   2245892561: function(r) {
     var flags = r.uint();
-    return { _: "replyKeyboardMarkup", resize: !!(flags & 1), singleUse: !!(flags & 2), selective: !!(flags & 4), persistent: !!(flags & 16), rows: r.vector(r.object), placeholder: flags & 8 ? r.string() : void 0 };
+    return { _: "replyKeyboardMarkup", resize: !!(flags & 1), singleUse: !!(flags & 2), selective: !!(flags & 4), persistent: !!(flags & 16), forceReply: !!(flags & 32), rows: r.vector(r.object), placeholder: flags & 8 ? r.string() : void 0 };
   },
-  1218642516: function(r) {
-    return { _: "replyInlineMarkup", rows: r.vector(r.object) };
+  2997966704: function(r) {
+    var flags = r.uint();
+    return { _: "replyInlineMarkup", forceReply: !!(flags & 32), rows: r.vector(r.object) };
   },
   3146955413: function(r) {
     return { _: "messageEntityUnknown", offset: r.int(), length: r.int() };
@@ -42449,6 +42874,9 @@ var m$1 = {
   },
   106086853: function(r) {
     return { _: "messageEntityDiffDelete", offset: r.int(), length: r.int() };
+  },
+  4255891405: function(r) {
+    return { _: "messageEntityTonAddress", offset: r.int(), length: r.int() };
   },
   4002160262: function(r) {
     return { _: "inputChannelEmpty" };
@@ -42928,6 +43356,13 @@ var m$1 = {
   2525416272: function(r) {
     return { _: "textDiff", text: r.object(), oldText: r.object() };
   },
+  2949094614: function(r) {
+    var flags = r.uint();
+    return { _: "textButton", text: r.object(), type: r.object(), style: flags & 1 ? r.object() : void 0 };
+  },
+  1020437354: function(r) {
+    return { _: "textTonAddress", text: r.object() };
+  },
   324435594: function(r) {
     return { _: "pageBlockUnsupported" };
   },
@@ -42964,8 +43399,9 @@ var m$1 = {
   3840442385: function(r) {
     return { _: "pageBlockList", items: r.vector(r.object) };
   },
-  641563686: function(r) {
-    return { _: "pageBlockBlockquote", text: r.object(), caption: r.object() };
+  1724999435: function(r) {
+    var flags = r.uint();
+    return { _: "pageBlockBlockquote", collapsed: !!(flags & 1), text: r.object(), caption: r.object() };
   },
   1329878739: function(r) {
     return { _: "pageBlockPullquote", text: r.object(), caption: r.object() };
@@ -43005,7 +43441,7 @@ var m$1 = {
   },
   3209554562: function(r) {
     var flags = r.uint();
-    return { _: "pageBlockTable", bordered: !!(flags & 1), striped: !!(flags & 2), title: r.object(), rows: r.vector(r.object) };
+    return { _: "pageBlockTable", bordered: !!(flags & 1), striped: !!(flags & 2), compact: !!(flags & 4), title: r.object(), rows: r.vector(r.object) };
   },
   534181569: function(r) {
     var flags = r.uint();
@@ -43050,6 +43486,13 @@ var m$1 = {
   },
   242108356: function(r) {
     return { _: "pageBlockBlockquoteBlocks", blocks: r.vector(r.object), caption: r.object() };
+  },
+  1835270936: function(r) {
+    var flags = r.uint();
+    return { _: "pageBlockButtonRow", alignLeft: !!(flags & 1), alignCenter: !!(flags & 2), alignRight: !!(flags & 4), buttons: r.vector(r.object) };
+  },
+  955923363: function(r) {
+    return { _: "pageBlockDocument", documentId: r.long(), caption: r.object() };
   },
   2246320897: function(r) {
     return { _: "phoneCallDiscardReasonMissed" };
@@ -43743,7 +44186,7 @@ var m$1 = {
   },
   1605510357: function(r) {
     var flags = r.uint();
-    return { _: "chatAdminRights", changeInfo: !!(flags & 1), postMessages: !!(flags & 2), editMessages: !!(flags & 4), deleteMessages: !!(flags & 8), banUsers: !!(flags & 16), inviteUsers: !!(flags & 32), pinMessages: !!(flags & 128), addAdmins: !!(flags & 512), anonymous: !!(flags & 1024), manageCall: !!(flags & 2048), other: !!(flags & 4096), manageTopics: !!(flags & 8192), postStories: !!(flags & 16384), editStories: !!(flags & 32768), deleteStories: !!(flags & 65536), manageDirectMessages: !!(flags & 131072), manageRanks: !!(flags & 262144), manageLinkedPeers: !!(flags & 524288) };
+    return { _: "chatAdminRights", changeInfo: !!(flags & 1), postMessages: !!(flags & 2), editMessages: !!(flags & 4), deleteMessages: !!(flags & 8), banUsers: !!(flags & 16), inviteUsers: !!(flags & 32), pinMessages: !!(flags & 128), addAdmins: !!(flags & 512), anonymous: !!(flags & 1024), manageCall: !!(flags & 2048), other: !!(flags & 4096), manageTopics: !!(flags & 8192), postStories: !!(flags & 16384), editStories: !!(flags & 32768), deleteStories: !!(flags & 65536), manageDirectMessages: !!(flags & 131072), manageRanks: !!(flags & 262144), manageLinkedPeers: !!(flags & 524288), manageWelcomeMessages: !!(flags & 1048576) };
   },
   2668758040: function(r) {
     var flags = r.uint();
@@ -43808,9 +44251,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messages.searchCounter", inexact: !!(flags & 2), filter: r.object(), count: r.int() };
   },
-  1020666860: function(r) {
+  3184157031: function(r) {
     var flags = r.uint();
-    return { _: "urlAuthResultRequest", requestWriteAccess: !!(flags & 1), requestPhoneNumber: !!(flags & 2), matchCodesFirst: !!(flags & 32), isApp: !!(flags & 64), bot: r.object(), domain: r.string(), browser: flags & 4 ? r.string() : void 0, platform: flags & 4 ? r.string() : void 0, ip: flags & 4 ? r.string() : void 0, region: flags & 4 ? r.string() : void 0, matchCodes: flags & 8 ? r.vector(r.string) : void 0, userIdHint: flags & 16 ? r.int53() : void 0, verifiedAppName: flags & 128 ? r.string() : void 0 };
+    return { _: "urlAuthResultRequest", requestWriteAccess: !!(flags & 1), requestPhoneNumber: !!(flags & 2), matchCodesFirst: !!(flags & 32), isApp: !!(flags & 64), requestWallet: !!(flags & 256), bot: r.object(), domain: r.string(), browser: flags & 4 ? r.string() : void 0, platform: flags & 4 ? r.string() : void 0, ip: flags & 4 ? r.string() : void 0, region: flags & 4 ? r.string() : void 0, matchCodes: flags & 8 ? r.vector(r.string) : void 0, userIdHint: flags & 16 ? r.int53() : void 0, verifiedAppName: flags & 128 ? r.string() : void 0, tcSessionId: flags & 512 ? r.long() : void 0, tcClientId: flags & 1024 ? r.string() : void 0 };
   },
   1648005024: function(r) {
     var flags = r.uint();
@@ -44017,9 +44460,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messages.discussionMessage", messages: r.vector(r.object), maxId: flags & 1 ? r.int() : void 0, readInboxMaxId: flags & 2 ? r.int() : void 0, readOutboxMaxId: flags & 4 ? r.int() : void 0, unreadCount: r.int(), chats: r.vector(r.object), users: r.vector(r.object) };
   },
-  462937446: function(r) {
+  3719670645: function(r) {
     var flags = r.uint();
-    return { _: "messageReplyHeader", replyToScheduled: !!(flags & 4), forumTopic: !!(flags & 8), quote: !!(flags & 512), replyToEphemeral: !!(flags & 8192), replyToMsgId: flags & 16 ? r.int() : void 0, replyToPeerId: flags & 1 ? r.object() : void 0, replyFrom: flags & 32 ? r.object() : void 0, replyMedia: flags & 256 ? r.object() : void 0, replyToTopId: flags & 2 ? r.int() : void 0, quoteText: flags & 64 ? r.string() : void 0, quoteEntities: flags & 128 ? r.vector(r.object) : void 0, quoteOffset: flags & 1024 ? r.int() : void 0, todoItemId: flags & 2048 ? r.int() : void 0, pollOption: flags & 4096 ? r.bytes() : void 0 };
+    return { _: "messageReplyHeader", replyToScheduled: !!(flags & 4), forumTopic: !!(flags & 8), quote: !!(flags & 512), replyToEphemeral: !!(flags & 8192), replyToMsgId: flags & 16 ? r.int() : void 0, replyToPeerId: flags & 1 ? r.object() : void 0, replyFrom: flags & 32 ? r.object() : void 0, replyMedia: flags & 256 ? r.object() : void 0, replyToTopId: flags & 2 ? r.int() : void 0, quoteText: flags & 64 ? r.string() : void 0, quoteEntities: flags & 128 ? r.vector(r.object) : void 0, quoteOffset: flags & 1024 ? r.int() : void 0, todoItemId: flags & 2048 ? r.int() : void 0, pollOption: flags & 4096 ? r.bytes() : void 0, quoteRich: flags & 16384 ? r.vector(r.object) : void 0 };
   },
   240843065: function(r) {
     return { _: "messageReplyStoryHeader", peer: r.object(), storyId: r.int() };
@@ -44353,9 +44796,9 @@ var m$1 = {
   4103700034: function(r) {
     return { _: "inputInvoiceBusinessBotTransferStars", bot: r.object(), stars: r.long() };
   },
-  3281998628: function(r) {
+  3920676440: function(r) {
     var flags = r.uint();
-    return { _: "inputInvoiceStarGiftResale", ton: !!(flags & 1), slug: r.string(), toId: r.object() };
+    return { _: "inputInvoiceStarGiftResale", ton: !!(flags & 1), showName: !!(flags & 4), slug: r.string(), toId: r.object(), message: flags & 2 ? r.object() : void 0 };
   },
   2584430776: function(r) {
     return { _: "inputInvoiceStarGiftPrepaidUpgrade", peer: r.object(), hash: r.string() };
@@ -44506,7 +44949,7 @@ var m$1 = {
   },
   3020371527: function(r) {
     var flags = r.uint();
-    return { _: "username", editable: !!(flags & 1), active: !!(flags & 2), username: r.string() };
+    return { _: "username", editable: !!(flags & 1), active: !!(flags & 2), deletable: !!(flags & 4), expired: !!(flags & 8), username: r.string() };
   },
   37687451: function(r) {
     return { _: "forumTopicDeleted", id: r.int() };
@@ -44688,9 +45131,9 @@ var m$1 = {
   3734957341: function(r) {
     return { _: "stories.storyViews", views: r.vector(r.object), users: r.vector(r.object) };
   },
-  1003796418: function(r) {
+  1975627120: function(r) {
     var flags = r.uint();
-    return { _: "inputReplyToMessage", replyToMsgId: r.int(), topMsgId: flags & 1 ? r.int() : void 0, replyToPeerId: flags & 2 ? r.object() : void 0, quoteText: flags & 4 ? r.string() : void 0, quoteEntities: flags & 8 ? r.vector(r.object) : void 0, quoteOffset: flags & 16 ? r.int() : void 0, monoforumPeerId: flags & 32 ? r.object() : void 0, todoItemId: flags & 64 ? r.int() : void 0, pollOption: flags & 128 ? r.bytes() : void 0 };
+    return { _: "inputReplyToMessage", replyToMsgId: r.int(), topMsgId: flags & 1 ? r.int() : void 0, replyToPeerId: flags & 2 ? r.object() : void 0, quoteText: flags & 4 ? r.string() : void 0, quoteEntities: flags & 8 ? r.vector(r.object) : void 0, quoteOffset: flags & 16 ? r.int() : void 0, monoforumPeerId: flags & 32 ? r.object() : void 0, todoItemId: flags & 64 ? r.int() : void 0, pollOption: flags & 128 ? r.bytes() : void 0, quoteRich: flags & 256 ? r.vector(r.object) : void 0 };
   },
   1484862010: function(r) {
     return { _: "inputReplyToStory", peer: r.object(), storyId: r.int() };
@@ -45248,12 +45691,12 @@ var m$1 = {
     var flags = r.uint();
     return { _: "messages.foundStickers", nextOffset: flags & 1 ? r.int() : void 0, hash: r.long(), stickers: r.vector(r.object) };
   },
-  2966251031: function(r) {
+  2703945727: function(r) {
     var flags = r.uint();
-    return { _: "botVerifierSettings", canModifyCustomDescription: !!(flags & 2), icon: r.long(), company: r.string(), customDescription: flags & 1 ? r.string() : void 0 };
+    return { _: "botVerifierSettings", canModifyCustomDescription: !!(flags & 2), icon: r.long(), company: r.string(), customDescription: flags & 1 ? r.object() : void 0 };
   },
-  4181513308: function(r) {
-    return { _: "botVerification", botId: r.int53(), icon: r.long(), description: r.string() };
+  4146990809: function(r) {
+    return { _: "botVerification", botId: r.int53(), icon: r.long(), description: r.object() };
   },
   1448235490: function(r) {
     var flags = r.uint();
@@ -45544,9 +45987,6 @@ var m$1 = {
   1009235855: function(r) {
     return { _: "inputPasskeyCredentialPublicKey", id: r.string(), rawId: r.string(), response: r.object() };
   },
-  1528613672: function(r) {
-    return { _: "inputPasskeyCredentialFirebasePNV", pnvToken: r.string() };
-  },
   2952094616: function(r) {
     return { _: "starGiftBackground", centerColor: r.int(), edgeColor: r.int(), textColor: r.int() };
   },
@@ -45699,9 +46139,9 @@ var m$1 = {
     var flags = r.uint();
     return { _: "communities.peerLinkRequests", totalCount: r.int(), requests: r.vector(r.object), nextOffset: flags & 1 ? r.string() : void 0, chats: r.vector(r.object), users: r.vector(r.object) };
   },
-  3653688346: function(r) {
+  3710369513: function(r) {
     var flags = r.uint();
-    return { _: "ephemeralMessage", out: !!(flags & 1), id: r.int(), fromId: r.object(), peerId: r.object(), receiverId: r.int53(), topMsgId: flags & 2 ? r.int() : void 0, date: r.int(), message: r.string(), entities: flags & 4 ? r.vector(r.object) : void 0, media: flags & 8 ? r.object() : void 0, replyMarkup: flags & 16 ? r.object() : void 0, replyTo: flags & 64 ? r.object() : void 0 };
+    return { _: "ephemeralMessage", out: !!(flags & 1), welcomeTemplate: !!(flags & 32), invertMedia: !!(flags & 128), noforwards: !!(flags & 4096), id: r.int(), fromId: r.object(), peerId: flags & 512 ? r.object() : void 0, receiverId: r.int53(), topMsgId: flags & 2 ? r.int() : void 0, date: r.int(), message: r.string(), entities: flags & 4 ? r.vector(r.object) : void 0, media: flags & 8 ? r.object() : void 0, replyMarkup: flags & 16 ? r.object() : void 0, replyTo: flags & 64 ? r.object() : void 0, richMessage: flags & 256 ? r.object() : void 0, chatInstance: flags & 1024 ? r.long() : void 0, anchorMsgId: flags & 2048 ? r.int() : void 0 };
   },
   2373472554: function(r) {
     return { _: "communities.participantJoinedChats", creatorChatIds: r.vector(r.int53), joinedChatIds: r.vector(r.int53), chats: r.vector(r.object), users: r.vector(r.object) };
@@ -45712,6 +46152,276 @@ var m$1 = {
   1279604680: function(r) {
     return { _: "messages.composedRichMessageWithAI", result: r.object() };
   },
+  3386740969: function(r) {
+    return { _: "buttonTypeDefault" };
+  },
+  3745330937: function(r) {
+    return { _: "buttonTypeRequestPhone" };
+  },
+  2616123712: function(r) {
+    return { _: "buttonTypeRequestGeoLocation" };
+  },
+  2865758084: function(r) {
+    var flags = r.uint();
+    return { _: "buttonTypeRequestPoll", quiz: flags & 1 ? r.boolean() : void 0 };
+  },
+  1331208759: function(r) {
+    r.uint();
+    return { _: "buttonTypeRequestPeer", buttonId: r.int(), peerType: r.object(), maxQuantity: r.int() };
+  },
+  1071802622: function(r) {
+    var flags = r.uint();
+    return { _: "inputButtonTypeRequestPeer", nameRequested: !!(flags & 1), usernameRequested: !!(flags & 2), photoRequested: !!(flags & 4), buttonId: r.int(), peerType: r.object(), maxQuantity: r.int() };
+  },
+  3222952314: function(r) {
+    return { _: "buttonTypeSimpleWebView", url: r.string() };
+  },
+  3970234580: function(r) {
+    return { _: "inlineButtonTypeUrl", url: r.string() };
+  },
+  3218091426: function(r) {
+    var flags = r.uint();
+    return { _: "inlineButtonTypeUrlAuth", fwdText: flags & 1 ? r.string() : void 0, url: r.string(), buttonId: r.int() };
+  },
+  2573319348: function(r) {
+    var flags = r.uint();
+    return { _: "inputInlineButtonTypeUrlAuth", requestWriteAccess: !!(flags & 1), fwdText: flags & 2 ? r.string() : void 0, url: r.string(), bot: flags & 4 ? r.object() : void 0 };
+  },
+  1003140532: function(r) {
+    return { _: "inlineButtonTypeWebView", url: r.string() };
+  },
+  693484600: function(r) {
+    var flags = r.uint();
+    return { _: "inlineButtonTypeCallback", requiresPassword: !!(flags & 1), data: r.bytes() };
+  },
+  1557360797: function(r) {
+    return { _: "inlineButtonTypeGame" };
+  },
+  1220204453: function(r) {
+    return { _: "inlineButtonTypeBuy" };
+  },
+  2474065909: function(r) {
+    var flags = r.uint();
+    return { _: "inlineButtonTypeSwitchInline", samePeer: !!(flags & 1), query: r.string(), peerTypes: flags & 2 ? r.vector(r.object) : void 0 };
+  },
+  1067663311: function(r) {
+    return { _: "inlineButtonTypeUserProfile", userId: r.int53() };
+  },
+  1408487002: function(r) {
+    return { _: "inputInlineButtonTypeUserProfile", userId: r.object() };
+  },
+  3021812338: function(r) {
+    return { _: "inlineButtonTypeCopy", copyText: r.string() };
+  },
+  2755158429: function(r) {
+    return { _: "inlineButtonTypeDisabled" };
+  },
+  297902882: function(r) {
+    var flags = r.uint();
+    return { _: "keyboardInlineButton", style: flags & 1024 ? r.object() : void 0, text: r.string(), type: r.object() };
+  },
+  423758582: function(r) {
+    return { _: "keyboardInlineButtonRow", buttons: r.vector(r.object) };
+  },
+  63312061: function(r) {
+    var flags = r.uint();
+    return { _: "richButtonStyle", bgPrimary: !!(flags & 1), bgDanger: !!(flags & 2), bgSuccess: !!(flags & 4), link: !!(flags & 8) };
+  },
+  1764381832: function(r) {
+    var flags = r.uint();
+    return { _: "pageButton", text: r.object(), type: r.object(), style: flags & 1 ? r.object() : void 0 };
+  },
+  1509940017: function(r) {
+    return { _: "ephemeral.welcomeMessagesNotModified" };
+  },
+  273664114: function(r) {
+    return { _: "ephemeral.welcomeMessages", hash: r.long(), messages: r.vector(r.object) };
+  },
+  819557436: function(r) {
+    return { _: "currencyRate", currency: r.string(), rate: r.double() };
+  },
+  3150767298: function(r) {
+    return { _: "payments.currencyRates", rates: r.vector(r.object) };
+  },
+  2894986777: function(r) {
+    return { _: "toncenter.apiResponse", response: r.object() };
+  },
+  428373505: function(r) {
+    return { _: "toncenter.streamingUrl", url: r.string(), expires: r.int() };
+  },
+  2663958184: function(r) {
+    var flags = r.uint();
+    return { _: "onrampMethodAvailability", available: !!(flags & 1), paymentMethod: r.string() };
+  },
+  230847874: function(r) {
+    var flags = r.uint();
+    return { _: "onrampProviderInfo", supportsBaseCurrencies: !!(flags & 1), supportsLimits: !!(flags & 2), supportsQuote: !!(flags & 4), id: r.string(), name: r.string(), cryptoCurrencies: r.vector(r.string) };
+  },
+  4190652787: function(r) {
+    var flags = r.uint();
+    return { _: "onrampAvailability", allowed: !!(flags & 1), buyAllowed: !!(flags & 2), countryCode: r.string(), state: flags & 4 ? r.string() : void 0, methods: r.vector(r.object) };
+  },
+  2078435198: function(r) {
+    return { _: "onrampLimits", baseCurrency: r.string(), baseMinAmount: r.string(), baseMaxAmount: r.string(), cryptoMinAmount: r.string(), cryptoMaxAmount: r.string(), paymentMethod: r.string() };
+  },
+  2055213545: function(r) {
+    return { _: "onrampQuote", baseCurrency: r.string(), baseAmount: r.string(), cryptoCurrency: r.string(), cryptoAmount: r.string(), cryptoPrice: r.string(), feeAmount: r.string(), extraFeeAmount: r.string(), networkFeeAmount: r.string(), totalAmount: r.string(), paymentMethod: r.string(), expiresDate: r.int() };
+  },
+  3521392164: function(r) {
+    return { _: "onrampSession", provider: r.string(), sessionId: r.string(), url: r.string(), expiresDate: r.int() };
+  },
+  2629415660: function(r) {
+    var flags = r.uint();
+    return { _: "walletStateEmpty", creating: !!(flags & 1) };
+  },
+  2512729195: function(r) {
+    var flags = r.uint();
+    return { _: "walletState", backupEnabled: !!(flags & 1), canExportPhrase: !!(flags & 2), canEnableBackup: !!(flags & 4), address: r.string(), publicKey: r.bytes(), balance: r.long() };
+  },
+  4269338316: function(r) {
+    var flags = r.uint();
+    return { _: "walletUserAddress", userId: flags & 1 ? r.int53() : void 0, address: r.string(), publicKey: r.bytes() };
+  },
+  2458811221: function(r) {
+    return { _: "wallet.userAddresses", addresses: r.vector(r.object), users: r.vector(r.object) };
+  },
+  3572133997: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransactionPeerUser", userId: r.int53(), address: r.string(), domain: flags & 1 ? r.string() : void 0 };
+  },
+  103596476: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransactionPeerAddress", address: r.string(), domain: flags & 1 ? r.string() : void 0 };
+  },
+  3851753582: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransactionPeerOnramp", address: r.string(), domain: flags & 1 ? r.string() : void 0, providerName: r.string() };
+  },
+  1921772890: function(r) {
+    return { _: "walletTransactionPeerUnsupported" };
+  },
+  1424428081: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransactionPeerChannel", channelId: r.int53(), address: r.string(), domain: flags & 1 ? r.string() : void 0 };
+  },
+  4101149849: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransactionPeerTelegramGift", ownProfile: !!(flags & 1) };
+  },
+  2502803779: function(r) {
+    var flags = r.uint();
+    return { _: "walletTransaction", incoming: !!(flags & 1), gasless: !!(flags & 2), failed: !!(flags & 4), keyChange: !!(flags & 32), commentEncrypted: !!(flags & 64), id: r.string(), amount: r.long(), fee: r.long(), date: r.int(), peer: r.object(), comment: flags & 8 ? r.string() : void 0, txHash: flags & 16 ? r.string() : void 0, nft: flags & 128 ? r.object() : void 0 };
+  },
+  1126356389: function(r) {
+    var flags = r.uint();
+    return { _: "wallet.transactions", balance: r.long(), transactions: r.vector(r.object), nextOffset: flags & 1 ? r.string() : void 0, chats: r.vector(r.object), users: r.vector(r.object) };
+  },
+  3872452353: function(r) {
+    return { _: "wallet.secretPhraseParts", token: r.string(), dcs: r.vector(r.int) };
+  },
+  417867063: function(r) {
+    return { _: "wallet.encryptedSecretPhrasePart", data: r.bytes() };
+  },
+  4191556335: function(r) {
+    return { _: "wallet.holderDc", dc: r.int(), publicKey: r.bytes() };
+  },
+  2581862151: function(r) {
+    return { _: "wallet.proofChallenge", payload: r.string(), expires: r.int(), domain: r.string() };
+  },
+  1622985485: function(r) {
+    return { _: "walletOwnershipProof", timestamp: r.int(), signature: r.bytes() };
+  },
+  1671708892: function(r) {
+    return { _: "inputWalletNew" };
+  },
+  1722182203: function(r) {
+    var flags = r.uint();
+    return { _: "inputWalletImported", publicKey: r.bytes(), anchorPublicKey: flags & 1 ? r.bytes() : void 0, proof: r.object() };
+  },
+  304255588: function(r) {
+    var flags = r.uint();
+    return { _: "tonConnectManifest", url: r.string(), name: r.string(), icon: flags & 1 ? r.object() : void 0 };
+  },
+  308631238: function(r) {
+    var flags = r.uint();
+    return { _: "tonConnectSession", pending: !!(flags & 1), closing: !!(flags & 2), closed: !!(flags & 4), id: r.long(), dappClientId: r.string(), clientId: flags & 8 ? r.string() : void 0, nonce: r.bytes(), manifest: flags & 16 ? r.object() : void 0, manifestError: flags & 32 ? r.int() : void 0, date: r.int() };
+  },
+  1271436947: function(r) {
+    return { _: "wallet.tonConnectChallenge", challenge: r.bytes(), eventId: r.long() };
+  },
+  1478780131: function(r) {
+    return { _: "tonConnectNextEventId", eventId: r.long() };
+  },
+  2707391763: function(r) {
+    var flags = r.uint();
+    return { _: "tonConnectRequest", sessionId: r.long(), msgId: r.int(), body: r.bytes(), expires: r.int(), topic: flags & 1 ? r.string() : void 0, traceId: flags & 2 ? r.string() : void 0 };
+  },
+  2244014372: function(r) {
+    return { _: "wallet.tonConnectPending", session: r.object(), requests: r.vector(r.object) };
+  },
+  236939414: function(r) {
+    return { _: "wallet.tonConnectSessions", sessions: r.vector(r.object) };
+  },
+  3186166413: function(r) {
+    var flags = r.uint();
+    return { _: "wallet.existingBalance", hasBalance: !!(flags & 1), url: r.string() };
+  },
+  1277096206: function(r) {
+    return { _: "wallet.nftAttribute", traitType: r.string(), value: r.string() };
+  },
+  389937907: function(r) {
+    var flags = r.uint();
+    return { _: "wallet.nftItem", collectionAddress: flags & 1 ? r.string() : void 0, address: r.string(), ownerAddress: r.string(), index: r.string(), name: flags & 2 ? r.string() : void 0, description: flags & 4 ? r.string() : void 0, image: flags & 8 ? r.object() : void 0, imageSmall: flags & 16 ? r.object() : void 0, contentUrl: flags & 32 ? r.object() : void 0, lottie: flags & 64 ? r.object() : void 0, attributes: flags & 128 ? r.vector(r.object) : void 0, extra: flags & 256 ? r.object() : void 0, gift: flags & 512 ? r.object() : void 0 };
+  },
+  2035107951: function(r) {
+    var flags = r.uint();
+    return { _: "wallet.nftItems", items: r.vector(r.object), nextOffset: flags & 1 ? r.string() : void 0 };
+  },
+  3747266572: function(r) {
+    return { _: "auth.firebasePnvIntent", nonce: r.string(), digitalCredentialPayload: r.string() };
+  },
+  1654613710: function(r) {
+    return { _: "inputTonConnectOauthSession", sessionId: r.long(), challengeAnswer: r.bytes(), body: r.bytes(), proof: r.object() };
+  },
+  1767755842: function(r) {
+    var flags = r.uint();
+    return { _: "exportedNoPaidMessagesToken", token: r.string(), url: r.string(), expires: flags & 1 ? r.int() : void 0 };
+  },
+  2511136847: function(r) {
+    return { _: "shareThemeDefault" };
+  },
+  1689466081: function(r) {
+    var flags = r.uint();
+    return { _: "shareThemeEmojiBackdrop", backdropId: flags & 1 ? r.int() : void 0, emojis: flags & 2 ? r.vector(r.object) : void 0 };
+  },
+  3958171245: function(r) {
+    return { _: "shareThemeGift", stargift: r.object() };
+  },
+  1069099867: function(r) {
+    return { _: "inputShareThemeGift", stargift: r.object() };
+  },
+  1170331218: function(r) {
+    return { _: "shareThemeBackdropOption", backdropId: r.int(), name: r.string(), centerColor: r.int(), edgeColor: r.int(), patternColor: r.int(), textColor: r.int() };
+  },
+  2050977279: function(r) {
+    return { _: "shareThemeBackdropsNotModified" };
+  },
+  2867518688: function(r) {
+    return { _: "shareThemeBackdrops", hash: r.int(), backdrops: r.vector(r.object) };
+  },
+  1474250151: function(r) {
+    return { _: "inputWalletCardSticker", coordinates: r.object(), nftAddress: r.string() };
+  },
+  4076932282: function(r) {
+    return { _: "wallet.cardSticker", coordinates: r.object(), nft: r.object() };
+  },
+  2396013489: function(r) {
+    var flags = r.uint();
+    return { _: "wallet.card", stickers: flags & 1 ? r.vector(r.object) : void 0, bgNftItem: flags & 2 ? r.object() : void 0, address: r.string(), balance: r.long() };
+  },
+  1918612715: function(r) {
+    return { _: "payments.starGiftDepositPayload", nftAddress: r.string(), payload: r.bytes(), amount: r.long() };
+  },
   _results: {
     "contacts.getContactIDs": function(r) {
       return r.vector(r.int);
@@ -45721,6 +46431,9 @@ var m$1 = {
     },
     "photos.deletePhotos": function(r) {
       return r.vector(r.long);
+    },
+    "payments.getOnrampBaseCurrencies": function(r) {
+      return r.vector(r.string);
     },
     "phone.checkGroupCall": function(r) {
       return r.vector(r.int);
@@ -46537,7 +47250,7 @@ var m = {
     w.string(h(v, "title"));
   },
   "channel": function(w, v) {
-    w.uint(3567203526);
+    w.uint(2060538432);
     var flags = 0;
     if (v.creator === true) flags |= 1;
     if (v.left === true) flags |= 4;
@@ -46605,6 +47318,9 @@ var m = {
     if (v.forumTabs === true) flags2 |= 524288;
     var _linkedCommunityId = v.linkedCommunityId !== void 0;
     if (_linkedCommunityId) flags2 |= 1048576;
+    if (v.inNews === true) flags2 |= 2097152;
+    var _pinnedMsgId = v.pinnedMsgId !== void 0;
+    if (_pinnedMsgId) flags2 |= 4194304;
     w.uint(flags2);
     w.int53(h(v, "id"));
     if (_accessHash) w.long(v.accessHash);
@@ -46628,6 +47344,7 @@ var m = {
     if (_sendPaidMessagesStars) w.long(v.sendPaidMessagesStars);
     if (_linkedMonoforumId) w.int53(v.linkedMonoforumId);
     if (_linkedCommunityId) w.int53(v.linkedCommunityId);
+    if (_pinnedMsgId) w.int(v.pinnedMsgId);
   },
   "channelForbidden": function(w, v) {
     w.uint(399807445);
@@ -46709,6 +47426,7 @@ var m = {
     if (v.translationsDisabled === true) flags |= 524288;
     var _reactionsLimit = v.reactionsLimit !== void 0;
     if (_reactionsLimit) flags |= 1048576;
+    if (v.hasWelcomeMessages === true) flags |= 2097152;
     w.uint(flags);
     w.int53(h(v, "id"));
     w.string(h(v, "about"));
@@ -46729,7 +47447,7 @@ var m = {
     if (_reactionsLimit) w.int(v.reactionsLimit);
   },
   "channelFull": function(w, v) {
-    w.uint(2689502522);
+    w.uint(3301236032);
     var flags = 0;
     var _participantsCount = v.participantsCount !== void 0;
     if (_participantsCount) flags |= 1;
@@ -46828,6 +47546,9 @@ var m = {
     if (_mainTab) flags2 |= 4194304;
     var _guardBotId = v.guardBotId !== void 0;
     if (_guardBotId) flags2 |= 8388608;
+    if (v.hasWelcomeMessages === true) flags2 |= 16777216;
+    var _shareTheme = v.shareTheme !== void 0;
+    if (_shareTheme) flags2 |= 33554432;
     w.uint(flags2);
     w.int53(h(v, "id"));
     w.string(h(v, "about"));
@@ -46875,6 +47596,7 @@ var m = {
     if (_sendPaidMessagesStars) w.long(v.sendPaidMessagesStars);
     if (_mainTab) w.object(v.mainTab);
     if (_guardBotId) w.int53(v.guardBotId);
+    if (_shareTheme) w.object(v.shareTheme);
   },
   "communityFull": function(w, v) {
     w.uint(3417810183);
@@ -47712,7 +48434,7 @@ var m = {
     if (_giftNum) w.int(v.giftNum);
   },
   "messageActionStarGiftUnique": function(w, v) {
-    w.uint(3871544610);
+    w.uint(2115768711);
     var flags = 0;
     if (v.upgrade === true) flags |= 1;
     if (v.transferred === true) flags |= 2;
@@ -47742,6 +48464,9 @@ var m = {
     var _canCraftAt = v.canCraftAt !== void 0;
     if (_canCraftAt) flags |= 32768;
     if (v.craft === true) flags |= 65536;
+    if (v.nameHidden === true) flags |= 131072;
+    var _message = v.message !== void 0;
+    if (_message) flags |= 262144;
     w.uint(flags);
     w.object(h(v, "gift"));
     if (_canExportAt) w.int(v.canExportAt);
@@ -47754,6 +48479,7 @@ var m = {
     if (_canResellAt) w.int(v.canResellAt);
     if (_dropOriginalDetailsStars) w.long(v.dropOriginalDetailsStars);
     if (_canCraftAt) w.int(v.canCraftAt);
+    if (_message) w.object(v.message);
   },
   "messageActionPaidMessagesRefunded": function(w, v) {
     w.uint(2887720909);
@@ -47891,6 +48617,43 @@ var m = {
     if (_communityId) flags |= 1;
     w.uint(flags);
     if (_communityId) w.int53(v.communityId);
+  },
+  "messageActionChatJoinedViaCommunity": function(w, v) {
+    w.uint(1250688640);
+    w.int53(h(v, "communityId"));
+  },
+  "messageActionGramTransfer": function(w, v) {
+    w.uint(2468997683);
+    var flags = 0;
+    var _comment = v.comment !== void 0;
+    if (_comment) flags |= 1;
+    if (v.commentEncrypted === true) flags |= 2;
+    w.uint(flags);
+    w.long(h(v, "amount"));
+    w.string(h(v, "peerAddress"));
+    w.string(h(v, "transactionId"));
+    if (_comment) w.string(v.comment);
+  },
+  "messageActionWalletTonConnectRequest": function(w, v) {
+    w.uint(1773716671);
+    var flags = 0;
+    var _topic = v.topic !== void 0;
+    if (_topic) flags |= 1;
+    var _traceId = v.traceId !== void 0;
+    if (_traceId) flags |= 2;
+    if (v.accepted === true) flags |= 4;
+    if (v.declined === true) flags |= 8;
+    var _dappName = v.dappName !== void 0;
+    if (_dappName) flags |= 16;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    w.int(h(v, "expires"));
+    if (_topic) w.string(v.topic);
+    if (_traceId) w.string(v.traceId);
+    if (_dappName) w.string(v.dappName);
+  },
+  "messageActionNoPaidMessagesTokenUsed": function(w) {
+    w.uint(3251827142);
   },
   "dialog": function(w, v) {
     w.uint(4236900339);
@@ -48256,7 +49019,7 @@ var m = {
     w.uint(2663876157);
   },
   "userFull": function(w, v) {
-    w.uint(114026053);
+    w.uint(3104582397);
     var flags = 0;
     if (v.blocked === true) flags |= 1;
     var _about = v.about !== void 0;
@@ -48337,6 +49100,8 @@ var m = {
     var _starsMyPendingRatingDate = v.starsMyPendingRatingDate !== void 0;
     var _flags2_18 = _starsMyPendingRating || _starsMyPendingRatingDate;
     if (_flags2_18) flags2 |= 262144;
+    var _walletCard = v.walletCard !== void 0;
+    if (_walletCard) flags2 |= 524288;
     var _mainTab = v.mainTab !== void 0;
     if (_mainTab) flags2 |= 1048576;
     var _savedMusic = v.savedMusic !== void 0;
@@ -48348,6 +49113,8 @@ var m = {
     var _botManagerId = v.botManagerId !== void 0;
     if (_botManagerId) flags2 |= 33554432;
     if (v.unofficialSecurityRisk === true) flags2 |= 67108864;
+    var _shareTheme = v.shareTheme !== void 0;
+    if (_shareTheme) flags2 |= 134217728;
     w.uint(flags2);
     w.int53(h(v, "id"));
     if (_about) w.string(v.about);
@@ -48387,6 +49154,8 @@ var m = {
     if (_savedMusic) w.object(v.savedMusic);
     if (_note) w.object(v.note);
     if (_botManagerId) w.int53(v.botManagerId);
+    if (_walletCard) w.object(v.walletCard);
+    if (_shareTheme) w.object(v.shareTheme);
   },
   "contact": function(w, v) {
     w.uint(341499403);
@@ -49711,12 +50480,19 @@ var m = {
     w.object(h(v, "message"));
   },
   "updateEphemeralBotCallbackQuery": function(w, v) {
-    w.uint(2604140386);
+    w.uint(2081454550);
+    var flags = 0;
+    var _peer = v.peer !== void 0;
+    if (_peer) flags |= 1;
+    var _chatInstance = v.chatInstance !== void 0;
+    if (_chatInstance) flags |= 2;
+    w.uint(flags);
     w.long(h(v, "queryId"));
     w.int53(h(v, "userId"));
-    w.object(h(v, "peer"));
+    if (_peer) w.object(v.peer);
     w.int(h(v, "msgId"));
     w.bytes(h(v, "data"));
+    if (_chatInstance) w.long(v.chatInstance);
     w.object(h(v, "message"));
   },
   "updateBotStarsSubscription": function(w, v) {
@@ -49729,6 +50505,38 @@ var m = {
     w.int53(h(v, "userId"));
     w.bytes(h(v, "payload"));
     w.int(h(v, "qts"));
+  },
+  "updateWalletState": function(w, v) {
+    w.uint(1791226538);
+    w.object(h(v, "state"));
+  },
+  "updateSentWalletTransaction": function(w, v) {
+    w.uint(2973977930);
+    var flags = 0;
+    if (v.gasless === true) flags |= 1;
+    var _transaction = v.transaction !== void 0;
+    if (_transaction) flags |= 2;
+    w.uint(flags);
+    w.string(h(v, "msgHash"));
+    if (_transaction) w.object(v.transaction);
+  },
+  "updateWalletGaslessInfo": function(w, v) {
+    w.uint(2829982892);
+    var flags = 0;
+    if (v.available === true) flags |= 1;
+    w.uint(flags);
+    w.int(h(v, "left"));
+    w.int(h(v, "resetAt"));
+    w.long(h(v, "minAmount"));
+    w.string(h(v, "relayerAddress"));
+  },
+  "updateWalletTonConnectSession": function(w, v) {
+    w.uint(1352896014);
+    w.object(h(v, "session"));
+  },
+  "updateWalletTonConnectPendingDisconnect": function(w, v) {
+    w.uint(3522068889);
+    w.vector(w.long, h(v, "sessionIds"));
   },
   "updates.state": function(w, v) {
     w.uint(2775329342);
@@ -50261,19 +51069,35 @@ var m = {
     w.string(h(v, "emoticon"));
   },
   "sendMessageTextDraftAction": function(w, v) {
-    w.uint(929929052);
+    w.uint(909162586);
+    var flags = 0;
+    if (v.canStop === true) flags |= 1;
+    if (v.keepOnStop === true) flags |= 2;
+    w.uint(flags);
     w.long(h(v, "randomId"));
     w.object(h(v, "text"));
   },
   "inputSendMessageRichMessageDraftAction": function(w, v) {
-    w.uint(3803331409);
+    w.uint(2839005118);
+    var flags = 0;
+    if (v.canStop === true) flags |= 1;
+    if (v.keepOnStop === true) flags |= 2;
+    w.uint(flags);
     w.long(h(v, "randomId"));
     w.object(h(v, "richMessage"));
   },
   "sendMessageRichMessageDraftAction": function(w, v) {
-    w.uint(2731222265);
+    w.uint(1381386387);
+    var flags = 0;
+    if (v.canStop === true) flags |= 1;
+    if (v.keepOnStop === true) flags |= 2;
+    w.uint(flags);
     w.long(h(v, "randomId"));
     w.object(h(v, "richMessage"));
+  },
+  "sendMessageStopDraftAction": function(w, v) {
+    w.uint(4227400368);
+    w.long(h(v, "randomId"));
   },
   "contacts.found": function(w, v) {
     w.uint(3004386717);
@@ -50934,202 +51758,14 @@ var m = {
     if (_verifierSettings) w.object(v.verifierSettings);
   },
   "keyboardButton": function(w, v) {
-    w.uint(2098662655);
+    w.uint(795322159);
     var flags = 0;
     var _style = v.style !== void 0;
     if (_style) flags |= 1024;
     w.uint(flags);
     if (_style) w.object(v.style);
     w.string(h(v, "text"));
-  },
-  "keyboardButtonUrl": function(w, v) {
-    w.uint(3624674796);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.string(h(v, "url"));
-  },
-  "keyboardButtonCallback": function(w, v) {
-    w.uint(3861629280);
-    var flags = 0;
-    if (v.requiresPassword === true) flags |= 1;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.bytes(h(v, "data"));
-  },
-  "keyboardButtonRequestPhone": function(w, v) {
-    w.uint(1098841487);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-  },
-  "keyboardButtonRequestGeoLocation": function(w, v) {
-    w.uint(2856384845);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-  },
-  "keyboardButtonSwitchInline": function(w, v) {
-    w.uint(2568198652);
-    var flags = 0;
-    if (v.samePeer === true) flags |= 1;
-    var _peerTypes = v.peerTypes && v.peerTypes.length;
-    if (_peerTypes) flags |= 2;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.string(h(v, "query"));
-    if (_peerTypes) w.vector(w.object, v.peerTypes);
-  },
-  "keyboardButtonGame": function(w, v) {
-    w.uint(2311426297);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-  },
-  "keyboardButtonBuy": function(w, v) {
-    w.uint(1067792645);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-  },
-  "keyboardButtonUrlAuth": function(w, v) {
-    w.uint(4111468281);
-    var flags = 0;
-    var _fwdText = v.fwdText !== void 0;
-    if (_fwdText) flags |= 1;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    if (_fwdText) w.string(v.fwdText);
-    w.string(h(v, "url"));
-    w.int(h(v, "buttonId"));
-  },
-  "inputKeyboardButtonUrlAuth": function(w, v) {
-    w.uint(1744911986);
-    var flags = 0;
-    if (v.requestWriteAccess === true) flags |= 1;
-    var _fwdText = v.fwdText !== void 0;
-    if (_fwdText) flags |= 2;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    if (_fwdText) w.string(v.fwdText);
-    w.string(h(v, "url"));
-    w.object(h(v, "bot"));
-  },
-  "keyboardButtonRequestPoll": function(w, v) {
-    w.uint(2047989634);
-    var flags = 0;
-    var _quiz = v.quiz !== void 0;
-    if (_quiz) flags |= 1;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    if (_quiz) w.boolean(v.quiz);
-    w.string(h(v, "text"));
-  },
-  "inputKeyboardButtonUserProfile": function(w, v) {
-    w.uint(2103314375);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.object(h(v, "userId"));
-  },
-  "keyboardButtonUserProfile": function(w, v) {
-    w.uint(3237829897);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.int53(h(v, "userId"));
-  },
-  "keyboardButtonWebView": function(w, v) {
-    w.uint(3896947104);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.string(h(v, "url"));
-  },
-  "keyboardButtonSimpleWebView": function(w, v) {
-    w.uint(3780920176);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.string(h(v, "url"));
-  },
-  "keyboardButtonRequestPeer": function(w, v) {
-    w.uint(1527715317);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.int(h(v, "buttonId"));
-    w.object(h(v, "peerType"));
-    w.int(h(v, "maxQuantity"));
-  },
-  "inputKeyboardButtonRequestPeer": function(w, v) {
-    w.uint(45580630);
-    var flags = 0;
-    if (v.nameRequested === true) flags |= 1;
-    if (v.usernameRequested === true) flags |= 2;
-    if (v.photoRequested === true) flags |= 4;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.int(h(v, "buttonId"));
-    w.object(h(v, "peerType"));
-    w.int(h(v, "maxQuantity"));
-  },
-  "keyboardButtonCopy": function(w, v) {
-    w.uint(3167006480);
-    var flags = 0;
-    var _style = v.style !== void 0;
-    if (_style) flags |= 1024;
-    w.uint(flags);
-    if (_style) w.object(v.style);
-    w.string(h(v, "text"));
-    w.string(h(v, "copyText"));
+    w.object(h(v, "type"));
   },
   "keyboardButtonRow": function(w, v) {
     w.uint(2002815875);
@@ -51160,12 +51796,16 @@ var m = {
     var _placeholder = v.placeholder !== void 0;
     if (_placeholder) flags |= 8;
     if (v.persistent === true) flags |= 16;
+    if (v.forceReply === true) flags |= 32;
     w.uint(flags);
     w.vector(w.object, h(v, "rows"));
     if (_placeholder) w.string(v.placeholder);
   },
   "replyInlineMarkup": function(w, v) {
-    w.uint(1218642516);
+    w.uint(2997966704);
+    var flags = 0;
+    if (v.forceReply === true) flags |= 32;
+    w.uint(flags);
     w.vector(w.object, h(v, "rows"));
   },
   "messageEntityUnknown": function(w, v) {
@@ -51308,6 +51948,11 @@ var m = {
   },
   "messageEntityDiffDelete": function(w, v) {
     w.uint(106086853);
+    w.int(h(v, "offset"));
+    w.int(h(v, "length"));
+  },
+  "messageEntityTonAddress": function(w, v) {
+    w.uint(4255891405);
     w.int(h(v, "offset"));
     w.int(h(v, "length"));
   },
@@ -52400,6 +53045,20 @@ var m = {
     w.object(h(v, "text"));
     w.object(h(v, "oldText"));
   },
+  "textButton": function(w, v) {
+    w.uint(2949094614);
+    var flags = 0;
+    var _style = v.style !== void 0;
+    if (_style) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "text"));
+    w.object(h(v, "type"));
+    if (_style) w.object(v.style);
+  },
+  "textTonAddress": function(w, v) {
+    w.uint(1020437354);
+    w.object(h(v, "text"));
+  },
   "pageBlockUnsupported": function(w) {
     w.uint(324435594);
   },
@@ -52449,7 +53108,10 @@ var m = {
     w.vector(w.object, h(v, "items"));
   },
   "pageBlockBlockquote": function(w, v) {
-    w.uint(641563686);
+    w.uint(1724999435);
+    var flags = 0;
+    if (v.collapsed === true) flags |= 1;
+    w.uint(flags);
     w.object(h(v, "text"));
     w.object(h(v, "caption"));
   },
@@ -52547,6 +53209,7 @@ var m = {
     var flags = 0;
     if (v.bordered === true) flags |= 1;
     if (v.striped === true) flags |= 2;
+    if (v.compact === true) flags |= 4;
     w.uint(flags);
     w.object(h(v, "title"));
     w.vector(w.object, h(v, "rows"));
@@ -52628,6 +53291,20 @@ var m = {
   "pageBlockBlockquoteBlocks": function(w, v) {
     w.uint(242108356);
     w.vector(w.object, h(v, "blocks"));
+    w.object(h(v, "caption"));
+  },
+  "pageBlockButtonRow": function(w, v) {
+    w.uint(1835270936);
+    var flags = 0;
+    if (v.alignLeft === true) flags |= 1;
+    if (v.alignCenter === true) flags |= 2;
+    if (v.alignRight === true) flags |= 4;
+    w.uint(flags);
+    w.vector(w.object, h(v, "buttons"));
+  },
+  "pageBlockDocument": function(w, v) {
+    w.uint(955923363);
+    w.long(h(v, "documentId"));
     w.object(h(v, "caption"));
   },
   "phoneCallDiscardReasonMissed": function(w) {
@@ -54148,6 +54825,7 @@ var m = {
     if (v.manageDirectMessages === true) flags |= 131072;
     if (v.manageRanks === true) flags |= 262144;
     if (v.manageLinkedPeers === true) flags |= 524288;
+    if (v.manageWelcomeMessages === true) flags |= 1048576;
     w.uint(flags);
   },
   "chatBannedRights": function(w, v) {
@@ -54327,7 +55005,7 @@ var m = {
     w.int(h(v, "count"));
   },
   "urlAuthResultRequest": function(w, v) {
-    w.uint(1020666860);
+    w.uint(3184157031);
     var flags = 0;
     if (v.requestWriteAccess === true) flags |= 1;
     if (v.requestPhoneNumber === true) flags |= 2;
@@ -54345,6 +55023,11 @@ var m = {
     if (v.isApp === true) flags |= 64;
     var _verifiedAppName = v.verifiedAppName !== void 0;
     if (_verifiedAppName) flags |= 128;
+    if (v.requestWallet === true) flags |= 256;
+    var _tcSessionId = v.tcSessionId !== void 0;
+    if (_tcSessionId) flags |= 512;
+    var _tcClientId = v.tcClientId !== void 0;
+    if (_tcClientId) flags |= 1024;
     w.uint(flags);
     w.object(h(v, "bot"));
     w.string(h(v, "domain"));
@@ -54355,6 +55038,8 @@ var m = {
     if (_matchCodes) w.vector(w.string, v.matchCodes);
     if (_userIdHint) w.int53(v.userIdHint);
     if (_verifiedAppName) w.string(v.verifiedAppName);
+    if (_tcSessionId) w.long(v.tcSessionId);
+    if (_tcClientId) w.string(v.tcClientId);
   },
   "urlAuthResultAccepted": function(w, v) {
     w.uint(1648005024);
@@ -54862,7 +55547,7 @@ var m = {
     w.vector(w.object, h(v, "users"));
   },
   "messageReplyHeader": function(w, v) {
-    w.uint(462937446);
+    w.uint(3719670645);
     var flags = 0;
     var _replyToPeerId = v.replyToPeerId !== void 0;
     if (_replyToPeerId) flags |= 1;
@@ -54888,6 +55573,8 @@ var m = {
     var _pollOption = v.pollOption !== void 0;
     if (_pollOption) flags |= 4096;
     if (v.replyToEphemeral === true) flags |= 8192;
+    var _quoteRich = v.quoteRich && v.quoteRich.length;
+    if (_quoteRich) flags |= 16384;
     w.uint(flags);
     if (_replyToMsgId) w.int(v.replyToMsgId);
     if (_replyToPeerId) w.object(v.replyToPeerId);
@@ -54899,6 +55586,7 @@ var m = {
     if (_quoteOffset) w.int(v.quoteOffset);
     if (_todoItemId) w.int(v.todoItemId);
     if (_pollOption) w.bytes(v.pollOption);
+    if (_quoteRich) w.vector(w.object, v.quoteRich);
   },
   "messageReplyStoryHeader": function(w, v) {
     w.uint(240843065);
@@ -55630,12 +56318,16 @@ var m = {
     w.long(h(v, "stars"));
   },
   "inputInvoiceStarGiftResale": function(w, v) {
-    w.uint(3281998628);
+    w.uint(3920676440);
     var flags = 0;
     if (v.ton === true) flags |= 1;
+    var _message = v.message !== void 0;
+    if (_message) flags |= 2;
+    if (v.showName === true) flags |= 4;
     w.uint(flags);
     w.string(h(v, "slug"));
     w.object(h(v, "toId"));
+    if (_message) w.object(v.message);
   },
   "inputInvoiceStarGiftPrepaidUpgrade": function(w, v) {
     w.uint(2584430776);
@@ -55965,6 +56657,8 @@ var m = {
     var flags = 0;
     if (v.editable === true) flags |= 1;
     if (v.active === true) flags |= 2;
+    if (v.deletable === true) flags |= 4;
+    if (v.expired === true) flags |= 8;
     w.uint(flags);
     w.string(h(v, "username"));
   },
@@ -56437,7 +57131,7 @@ var m = {
     w.vector(w.object, h(v, "users"));
   },
   "inputReplyToMessage": function(w, v) {
-    w.uint(1003796418);
+    w.uint(1975627120);
     var flags = 0;
     var _topMsgId = v.topMsgId !== void 0;
     if (_topMsgId) flags |= 1;
@@ -56455,6 +57149,8 @@ var m = {
     if (_todoItemId) flags |= 64;
     var _pollOption = v.pollOption !== void 0;
     if (_pollOption) flags |= 128;
+    var _quoteRich = v.quoteRich && v.quoteRich.length;
+    if (_quoteRich) flags |= 256;
     w.uint(flags);
     w.int(h(v, "replyToMsgId"));
     if (_topMsgId) w.int(v.topMsgId);
@@ -56465,6 +57161,7 @@ var m = {
     if (_monoforumPeerId) w.object(v.monoforumPeerId);
     if (_todoItemId) w.int(v.todoItemId);
     if (_pollOption) w.bytes(v.pollOption);
+    if (_quoteRich) w.vector(w.object, v.quoteRich);
   },
   "inputReplyToStory": function(w, v) {
     w.uint(1484862010);
@@ -58011,7 +58708,7 @@ var m = {
     w.vector(w.object, h(v, "stickers"));
   },
   "botVerifierSettings": function(w, v) {
-    w.uint(2966251031);
+    w.uint(2703945727);
     var flags = 0;
     var _customDescription = v.customDescription !== void 0;
     if (_customDescription) flags |= 1;
@@ -58019,13 +58716,13 @@ var m = {
     w.uint(flags);
     w.long(h(v, "icon"));
     w.string(h(v, "company"));
-    if (_customDescription) w.string(v.customDescription);
+    if (_customDescription) w.object(v.customDescription);
   },
   "botVerification": function(w, v) {
-    w.uint(4181513308);
+    w.uint(4146990809);
     w.int53(h(v, "botId"));
     w.long(h(v, "icon"));
-    w.string(h(v, "description"));
+    w.object(h(v, "description"));
   },
   "starGiftAttributeModel": function(w, v) {
     w.uint(1448235490);
@@ -58695,10 +59392,6 @@ var m = {
     w.string(h(v, "rawId"));
     w.object(h(v, "response"));
   },
-  "inputPasskeyCredentialFirebasePNV": function(w, v) {
-    w.uint(1528613672);
-    w.string(h(v, "pnvToken"));
-  },
   "starGiftBackground": function(w, v) {
     w.uint(2952094616);
     w.int(h(v, "centerColor"));
@@ -59008,7 +59701,7 @@ var m = {
     w.vector(w.object, h(v, "users"));
   },
   "ephemeralMessage": function(w, v) {
-    w.uint(3653688346);
+    w.uint(3710369513);
     var flags = 0;
     if (v.out === true) flags |= 1;
     var _topMsgId = v.topMsgId !== void 0;
@@ -59019,12 +59712,23 @@ var m = {
     if (_media) flags |= 8;
     var _replyMarkup = v.replyMarkup !== void 0;
     if (_replyMarkup) flags |= 16;
+    if (v.welcomeTemplate === true) flags |= 32;
     var _replyTo = v.replyTo !== void 0;
     if (_replyTo) flags |= 64;
+    if (v.invertMedia === true) flags |= 128;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 256;
+    var _peerId = v.peerId !== void 0;
+    if (_peerId) flags |= 512;
+    var _chatInstance = v.chatInstance !== void 0;
+    if (_chatInstance) flags |= 1024;
+    var _anchorMsgId = v.anchorMsgId !== void 0;
+    if (_anchorMsgId) flags |= 2048;
+    if (v.noforwards === true) flags |= 4096;
     w.uint(flags);
     w.int(h(v, "id"));
     w.object(h(v, "fromId"));
-    w.object(h(v, "peerId"));
+    if (_peerId) w.object(v.peerId);
     w.int53(h(v, "receiverId"));
     if (_topMsgId) w.int(v.topMsgId);
     w.int(h(v, "date"));
@@ -59033,6 +59737,9 @@ var m = {
     if (_media) w.object(v.media);
     if (_replyMarkup) w.object(v.replyMarkup);
     if (_replyTo) w.object(v.replyTo);
+    if (_richMessage) w.object(v.richMessage);
+    if (_chatInstance) w.long(v.chatInstance);
+    if (_anchorMsgId) w.int(v.anchorMsgId);
   },
   "communities.participantJoinedChats": function(w, v) {
     w.uint(2373472554);
@@ -59048,6 +59755,601 @@ var m = {
   "messages.composedRichMessageWithAI": function(w, v) {
     w.uint(1279604680);
     w.object(h(v, "result"));
+  },
+  "buttonTypeDefault": function(w) {
+    w.uint(3386740969);
+  },
+  "buttonTypeRequestPhone": function(w) {
+    w.uint(3745330937);
+  },
+  "buttonTypeRequestGeoLocation": function(w) {
+    w.uint(2616123712);
+  },
+  "buttonTypeRequestPoll": function(w, v) {
+    w.uint(2865758084);
+    var flags = 0;
+    var _quiz = v.quiz !== void 0;
+    if (_quiz) flags |= 1;
+    w.uint(flags);
+    if (_quiz) w.boolean(v.quiz);
+  },
+  "buttonTypeRequestPeer": function(w, v) {
+    w.uint(1331208759);
+    var flags = 0;
+    w.uint(flags);
+    w.int(h(v, "buttonId"));
+    w.object(h(v, "peerType"));
+    w.int(h(v, "maxQuantity"));
+  },
+  "inputButtonTypeRequestPeer": function(w, v) {
+    w.uint(1071802622);
+    var flags = 0;
+    if (v.nameRequested === true) flags |= 1;
+    if (v.usernameRequested === true) flags |= 2;
+    if (v.photoRequested === true) flags |= 4;
+    w.uint(flags);
+    w.int(h(v, "buttonId"));
+    w.object(h(v, "peerType"));
+    w.int(h(v, "maxQuantity"));
+  },
+  "buttonTypeSimpleWebView": function(w, v) {
+    w.uint(3222952314);
+    w.string(h(v, "url"));
+  },
+  "inlineButtonTypeUrl": function(w, v) {
+    w.uint(3970234580);
+    w.string(h(v, "url"));
+  },
+  "inlineButtonTypeUrlAuth": function(w, v) {
+    w.uint(3218091426);
+    var flags = 0;
+    var _fwdText = v.fwdText !== void 0;
+    if (_fwdText) flags |= 1;
+    w.uint(flags);
+    if (_fwdText) w.string(v.fwdText);
+    w.string(h(v, "url"));
+    w.int(h(v, "buttonId"));
+  },
+  "inputInlineButtonTypeUrlAuth": function(w, v) {
+    w.uint(2573319348);
+    var flags = 0;
+    if (v.requestWriteAccess === true) flags |= 1;
+    var _fwdText = v.fwdText !== void 0;
+    if (_fwdText) flags |= 2;
+    var _bot = v.bot !== void 0;
+    if (_bot) flags |= 4;
+    w.uint(flags);
+    if (_fwdText) w.string(v.fwdText);
+    w.string(h(v, "url"));
+    if (_bot) w.object(v.bot);
+  },
+  "inlineButtonTypeWebView": function(w, v) {
+    w.uint(1003140532);
+    w.string(h(v, "url"));
+  },
+  "inlineButtonTypeCallback": function(w, v) {
+    w.uint(693484600);
+    var flags = 0;
+    if (v.requiresPassword === true) flags |= 1;
+    w.uint(flags);
+    w.bytes(h(v, "data"));
+  },
+  "inlineButtonTypeGame": function(w) {
+    w.uint(1557360797);
+  },
+  "inlineButtonTypeBuy": function(w) {
+    w.uint(1220204453);
+  },
+  "inlineButtonTypeSwitchInline": function(w, v) {
+    w.uint(2474065909);
+    var flags = 0;
+    if (v.samePeer === true) flags |= 1;
+    var _peerTypes = v.peerTypes && v.peerTypes.length;
+    if (_peerTypes) flags |= 2;
+    w.uint(flags);
+    w.string(h(v, "query"));
+    if (_peerTypes) w.vector(w.object, v.peerTypes);
+  },
+  "inlineButtonTypeUserProfile": function(w, v) {
+    w.uint(1067663311);
+    w.int53(h(v, "userId"));
+  },
+  "inputInlineButtonTypeUserProfile": function(w, v) {
+    w.uint(1408487002);
+    w.object(h(v, "userId"));
+  },
+  "inlineButtonTypeCopy": function(w, v) {
+    w.uint(3021812338);
+    w.string(h(v, "copyText"));
+  },
+  "inlineButtonTypeDisabled": function(w) {
+    w.uint(2755158429);
+  },
+  "keyboardInlineButton": function(w, v) {
+    w.uint(297902882);
+    var flags = 0;
+    var _style = v.style !== void 0;
+    if (_style) flags |= 1024;
+    w.uint(flags);
+    if (_style) w.object(v.style);
+    w.string(h(v, "text"));
+    w.object(h(v, "type"));
+  },
+  "keyboardInlineButtonRow": function(w, v) {
+    w.uint(423758582);
+    w.vector(w.object, h(v, "buttons"));
+  },
+  "richButtonStyle": function(w, v) {
+    w.uint(63312061);
+    var flags = 0;
+    if (v.bgPrimary === true) flags |= 1;
+    if (v.bgDanger === true) flags |= 2;
+    if (v.bgSuccess === true) flags |= 4;
+    if (v.link === true) flags |= 8;
+    w.uint(flags);
+  },
+  "pageButton": function(w, v) {
+    w.uint(1764381832);
+    var flags = 0;
+    var _style = v.style !== void 0;
+    if (_style) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "text"));
+    w.object(h(v, "type"));
+    if (_style) w.object(v.style);
+  },
+  "ephemeral.welcomeMessagesNotModified": function(w) {
+    w.uint(1509940017);
+  },
+  "ephemeral.welcomeMessages": function(w, v) {
+    w.uint(273664114);
+    w.long(h(v, "hash"));
+    w.vector(w.object, h(v, "messages"));
+  },
+  "currencyRate": function(w, v) {
+    w.uint(819557436);
+    w.string(h(v, "currency"));
+    w.double(h(v, "rate"));
+  },
+  "payments.currencyRates": function(w, v) {
+    w.uint(3150767298);
+    w.vector(w.object, h(v, "rates"));
+  },
+  "toncenter.apiResponse": function(w, v) {
+    w.uint(2894986777);
+    w.object(h(v, "response"));
+  },
+  "toncenter.streamingUrl": function(w, v) {
+    w.uint(428373505);
+    w.string(h(v, "url"));
+    w.int(h(v, "expires"));
+  },
+  "onrampMethodAvailability": function(w, v) {
+    w.uint(2663958184);
+    var flags = 0;
+    if (v.available === true) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "paymentMethod"));
+  },
+  "onrampProviderInfo": function(w, v) {
+    w.uint(230847874);
+    var flags = 0;
+    if (v.supportsBaseCurrencies === true) flags |= 1;
+    if (v.supportsLimits === true) flags |= 2;
+    if (v.supportsQuote === true) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "id"));
+    w.string(h(v, "name"));
+    w.vector(w.string, h(v, "cryptoCurrencies"));
+  },
+  "onrampAvailability": function(w, v) {
+    w.uint(4190652787);
+    var flags = 0;
+    if (v.allowed === true) flags |= 1;
+    if (v.buyAllowed === true) flags |= 2;
+    var _state = v.state !== void 0;
+    if (_state) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "countryCode"));
+    if (_state) w.string(v.state);
+    w.vector(w.object, h(v, "methods"));
+  },
+  "onrampLimits": function(w, v) {
+    w.uint(2078435198);
+    w.string(h(v, "baseCurrency"));
+    w.string(h(v, "baseMinAmount"));
+    w.string(h(v, "baseMaxAmount"));
+    w.string(h(v, "cryptoMinAmount"));
+    w.string(h(v, "cryptoMaxAmount"));
+    w.string(h(v, "paymentMethod"));
+  },
+  "onrampQuote": function(w, v) {
+    w.uint(2055213545);
+    w.string(h(v, "baseCurrency"));
+    w.string(h(v, "baseAmount"));
+    w.string(h(v, "cryptoCurrency"));
+    w.string(h(v, "cryptoAmount"));
+    w.string(h(v, "cryptoPrice"));
+    w.string(h(v, "feeAmount"));
+    w.string(h(v, "extraFeeAmount"));
+    w.string(h(v, "networkFeeAmount"));
+    w.string(h(v, "totalAmount"));
+    w.string(h(v, "paymentMethod"));
+    w.int(h(v, "expiresDate"));
+  },
+  "onrampSession": function(w, v) {
+    w.uint(3521392164);
+    w.string(h(v, "provider"));
+    w.string(h(v, "sessionId"));
+    w.string(h(v, "url"));
+    w.int(h(v, "expiresDate"));
+  },
+  "walletStateEmpty": function(w, v) {
+    w.uint(2629415660);
+    var flags = 0;
+    if (v.creating === true) flags |= 1;
+    w.uint(flags);
+  },
+  "walletState": function(w, v) {
+    w.uint(2512729195);
+    var flags = 0;
+    if (v.backupEnabled === true) flags |= 1;
+    if (v.canExportPhrase === true) flags |= 2;
+    if (v.canEnableBackup === true) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "address"));
+    w.bytes(h(v, "publicKey"));
+    w.long(h(v, "balance"));
+  },
+  "walletUserAddress": function(w, v) {
+    w.uint(4269338316);
+    var flags = 0;
+    var _userId = v.userId !== void 0;
+    if (_userId) flags |= 1;
+    w.uint(flags);
+    if (_userId) w.int53(v.userId);
+    w.string(h(v, "address"));
+    w.bytes(h(v, "publicKey"));
+  },
+  "wallet.userAddresses": function(w, v) {
+    w.uint(2458811221);
+    w.vector(w.object, h(v, "addresses"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "walletTransactionPeerUser": function(w, v) {
+    w.uint(3572133997);
+    var flags = 0;
+    var _domain = v.domain !== void 0;
+    if (_domain) flags |= 1;
+    w.uint(flags);
+    w.int53(h(v, "userId"));
+    w.string(h(v, "address"));
+    if (_domain) w.string(v.domain);
+  },
+  "walletTransactionPeerAddress": function(w, v) {
+    w.uint(103596476);
+    var flags = 0;
+    var _domain = v.domain !== void 0;
+    if (_domain) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "address"));
+    if (_domain) w.string(v.domain);
+  },
+  "walletTransactionPeerOnramp": function(w, v) {
+    w.uint(3851753582);
+    var flags = 0;
+    var _domain = v.domain !== void 0;
+    if (_domain) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "address"));
+    if (_domain) w.string(v.domain);
+    w.string(h(v, "providerName"));
+  },
+  "walletTransactionPeerUnsupported": function(w) {
+    w.uint(1921772890);
+  },
+  "walletTransactionPeerChannel": function(w, v) {
+    w.uint(1424428081);
+    var flags = 0;
+    var _domain = v.domain !== void 0;
+    if (_domain) flags |= 1;
+    w.uint(flags);
+    w.int53(h(v, "channelId"));
+    w.string(h(v, "address"));
+    if (_domain) w.string(v.domain);
+  },
+  "walletTransactionPeerTelegramGift": function(w, v) {
+    w.uint(4101149849);
+    var flags = 0;
+    if (v.ownProfile === true) flags |= 1;
+    w.uint(flags);
+  },
+  "walletTransaction": function(w, v) {
+    w.uint(2502803779);
+    var flags = 0;
+    if (v.incoming === true) flags |= 1;
+    if (v.gasless === true) flags |= 2;
+    if (v.failed === true) flags |= 4;
+    var _comment = v.comment !== void 0;
+    if (_comment) flags |= 8;
+    var _txHash = v.txHash !== void 0;
+    if (_txHash) flags |= 16;
+    if (v.keyChange === true) flags |= 32;
+    if (v.commentEncrypted === true) flags |= 64;
+    var _nft = v.nft !== void 0;
+    if (_nft) flags |= 128;
+    w.uint(flags);
+    w.string(h(v, "id"));
+    w.long(h(v, "amount"));
+    w.long(h(v, "fee"));
+    w.int(h(v, "date"));
+    w.object(h(v, "peer"));
+    if (_comment) w.string(v.comment);
+    if (_txHash) w.string(v.txHash);
+    if (_nft) w.object(v.nft);
+  },
+  "wallet.transactions": function(w, v) {
+    w.uint(1126356389);
+    var flags = 0;
+    var _nextOffset = v.nextOffset !== void 0;
+    if (_nextOffset) flags |= 1;
+    w.uint(flags);
+    w.long(h(v, "balance"));
+    w.vector(w.object, h(v, "transactions"));
+    if (_nextOffset) w.string(v.nextOffset);
+    w.vector(w.object, h(v, "chats"));
+    w.vector(w.object, h(v, "users"));
+  },
+  "wallet.secretPhraseParts": function(w, v) {
+    w.uint(3872452353);
+    w.string(h(v, "token"));
+    w.vector(w.int, h(v, "dcs"));
+  },
+  "wallet.encryptedSecretPhrasePart": function(w, v) {
+    w.uint(417867063);
+    w.bytes(h(v, "data"));
+  },
+  "wallet.holderDc": function(w, v) {
+    w.uint(4191556335);
+    w.int(h(v, "dc"));
+    w.bytes(h(v, "publicKey"));
+  },
+  "wallet.proofChallenge": function(w, v) {
+    w.uint(2581862151);
+    w.string(h(v, "payload"));
+    w.int(h(v, "expires"));
+    w.string(h(v, "domain"));
+  },
+  "walletOwnershipProof": function(w, v) {
+    w.uint(1622985485);
+    w.int(h(v, "timestamp"));
+    w.bytes(h(v, "signature"));
+  },
+  "inputWalletNew": function(w) {
+    w.uint(1671708892);
+  },
+  "inputWalletImported": function(w, v) {
+    w.uint(1722182203);
+    var flags = 0;
+    var _anchorPublicKey = v.anchorPublicKey !== void 0;
+    if (_anchorPublicKey) flags |= 1;
+    w.uint(flags);
+    w.bytes(h(v, "publicKey"));
+    if (_anchorPublicKey) w.bytes(v.anchorPublicKey);
+    w.object(h(v, "proof"));
+  },
+  "tonConnectManifest": function(w, v) {
+    w.uint(304255588);
+    var flags = 0;
+    var _icon = v.icon !== void 0;
+    if (_icon) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "url"));
+    w.string(h(v, "name"));
+    if (_icon) w.object(v.icon);
+  },
+  "tonConnectSession": function(w, v) {
+    w.uint(308631238);
+    var flags = 0;
+    if (v.pending === true) flags |= 1;
+    if (v.closing === true) flags |= 2;
+    if (v.closed === true) flags |= 4;
+    var _clientId = v.clientId !== void 0;
+    if (_clientId) flags |= 8;
+    var _manifest = v.manifest !== void 0;
+    if (_manifest) flags |= 16;
+    var _manifestError = v.manifestError !== void 0;
+    if (_manifestError) flags |= 32;
+    w.uint(flags);
+    w.long(h(v, "id"));
+    w.string(h(v, "dappClientId"));
+    if (_clientId) w.string(v.clientId);
+    w.bytes(h(v, "nonce"));
+    if (_manifest) w.object(v.manifest);
+    if (_manifestError) w.int(v.manifestError);
+    w.int(h(v, "date"));
+  },
+  "wallet.tonConnectChallenge": function(w, v) {
+    w.uint(1271436947);
+    w.bytes(h(v, "challenge"));
+    w.long(h(v, "eventId"));
+  },
+  "tonConnectNextEventId": function(w, v) {
+    w.uint(1478780131);
+    w.long(h(v, "eventId"));
+  },
+  "tonConnectRequest": function(w, v) {
+    w.uint(2707391763);
+    var flags = 0;
+    var _topic = v.topic !== void 0;
+    if (_topic) flags |= 1;
+    var _traceId = v.traceId !== void 0;
+    if (_traceId) flags |= 2;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    w.int(h(v, "msgId"));
+    w.bytes(h(v, "body"));
+    w.int(h(v, "expires"));
+    if (_topic) w.string(v.topic);
+    if (_traceId) w.string(v.traceId);
+  },
+  "wallet.tonConnectPending": function(w, v) {
+    w.uint(2244014372);
+    w.object(h(v, "session"));
+    w.vector(w.object, h(v, "requests"));
+  },
+  "wallet.tonConnectSessions": function(w, v) {
+    w.uint(236939414);
+    w.vector(w.object, h(v, "sessions"));
+  },
+  "wallet.existingBalance": function(w, v) {
+    w.uint(3186166413);
+    var flags = 0;
+    if (v.hasBalance === true) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "url"));
+  },
+  "wallet.nftAttribute": function(w, v) {
+    w.uint(1277096206);
+    w.string(h(v, "traitType"));
+    w.string(h(v, "value"));
+  },
+  "wallet.nftItem": function(w, v) {
+    w.uint(389937907);
+    var flags = 0;
+    var _collectionAddress = v.collectionAddress !== void 0;
+    if (_collectionAddress) flags |= 1;
+    var _name = v.name !== void 0;
+    if (_name) flags |= 2;
+    var _description = v.description !== void 0;
+    if (_description) flags |= 4;
+    var _image = v.image !== void 0;
+    if (_image) flags |= 8;
+    var _imageSmall = v.imageSmall !== void 0;
+    if (_imageSmall) flags |= 16;
+    var _contentUrl = v.contentUrl !== void 0;
+    if (_contentUrl) flags |= 32;
+    var _lottie = v.lottie !== void 0;
+    if (_lottie) flags |= 64;
+    var _attributes = v.attributes && v.attributes.length;
+    if (_attributes) flags |= 128;
+    var _extra = v.extra !== void 0;
+    if (_extra) flags |= 256;
+    var _gift = v.gift !== void 0;
+    if (_gift) flags |= 512;
+    w.uint(flags);
+    if (_collectionAddress) w.string(v.collectionAddress);
+    w.string(h(v, "address"));
+    w.string(h(v, "ownerAddress"));
+    w.string(h(v, "index"));
+    if (_name) w.string(v.name);
+    if (_description) w.string(v.description);
+    if (_image) w.object(v.image);
+    if (_imageSmall) w.object(v.imageSmall);
+    if (_contentUrl) w.object(v.contentUrl);
+    if (_lottie) w.object(v.lottie);
+    if (_attributes) w.vector(w.object, v.attributes);
+    if (_extra) w.object(v.extra);
+    if (_gift) w.object(v.gift);
+  },
+  "wallet.nftItems": function(w, v) {
+    w.uint(2035107951);
+    var flags = 0;
+    var _nextOffset = v.nextOffset !== void 0;
+    if (_nextOffset) flags |= 1;
+    w.uint(flags);
+    w.vector(w.object, h(v, "items"));
+    if (_nextOffset) w.string(v.nextOffset);
+  },
+  "auth.firebasePnvIntent": function(w, v) {
+    w.uint(3747266572);
+    w.string(h(v, "nonce"));
+    w.string(h(v, "digitalCredentialPayload"));
+  },
+  "inputTonConnectOauthSession": function(w, v) {
+    w.uint(1654613710);
+    w.long(h(v, "sessionId"));
+    w.bytes(h(v, "challengeAnswer"));
+    w.bytes(h(v, "body"));
+    w.object(h(v, "proof"));
+  },
+  "exportedNoPaidMessagesToken": function(w, v) {
+    w.uint(1767755842);
+    var flags = 0;
+    var _expires = v.expires !== void 0;
+    if (_expires) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "token"));
+    w.string(h(v, "url"));
+    if (_expires) w.int(v.expires);
+  },
+  "shareThemeDefault": function(w) {
+    w.uint(2511136847);
+  },
+  "shareThemeEmojiBackdrop": function(w, v) {
+    w.uint(1689466081);
+    var flags = 0;
+    var _backdropId = v.backdropId !== void 0;
+    if (_backdropId) flags |= 1;
+    var _emojis = v.emojis && v.emojis.length;
+    if (_emojis) flags |= 2;
+    w.uint(flags);
+    if (_backdropId) w.int(v.backdropId);
+    if (_emojis) w.vector(w.object, v.emojis);
+  },
+  "shareThemeGift": function(w, v) {
+    w.uint(3958171245);
+    w.object(h(v, "stargift"));
+  },
+  "inputShareThemeGift": function(w, v) {
+    w.uint(1069099867);
+    w.object(h(v, "stargift"));
+  },
+  "shareThemeBackdropOption": function(w, v) {
+    w.uint(1170331218);
+    w.int(h(v, "backdropId"));
+    w.string(h(v, "name"));
+    w.int(h(v, "centerColor"));
+    w.int(h(v, "edgeColor"));
+    w.int(h(v, "patternColor"));
+    w.int(h(v, "textColor"));
+  },
+  "shareThemeBackdropsNotModified": function(w) {
+    w.uint(2050977279);
+  },
+  "shareThemeBackdrops": function(w, v) {
+    w.uint(2867518688);
+    w.int(h(v, "hash"));
+    w.vector(w.object, h(v, "backdrops"));
+  },
+  "inputWalletCardSticker": function(w, v) {
+    w.uint(1474250151);
+    w.object(h(v, "coordinates"));
+    w.string(h(v, "nftAddress"));
+  },
+  "wallet.cardSticker": function(w, v) {
+    w.uint(4076932282);
+    w.object(h(v, "coordinates"));
+    w.object(h(v, "nft"));
+  },
+  "wallet.card": function(w, v) {
+    w.uint(2396013489);
+    var flags = 0;
+    var _stickers = v.stickers && v.stickers.length;
+    if (_stickers) flags |= 1;
+    var _bgNftItem = v.bgNftItem !== void 0;
+    if (_bgNftItem) flags |= 2;
+    w.uint(flags);
+    if (_stickers) w.vector(w.object, v.stickers);
+    if (_bgNftItem) w.object(v.bgNftItem);
+    w.string(h(v, "address"));
+    w.long(h(v, "balance"));
+  },
+  "payments.starGiftDepositPayload": function(w, v) {
+    w.uint(1918612715);
+    w.string(h(v, "nftAddress"));
+    w.bytes(h(v, "payload"));
+    w.long(h(v, "amount"));
   },
   "invokeAfterMsg": function(w, v) {
     w.uint(3416209197);
@@ -59286,6 +60588,32 @@ var m = {
     w.object(h(v, "credential"));
     if (_flags_0) w.int(v.fromDcId);
     if (_flags_0) w.long(v.fromAuthKeyId);
+  },
+  "auth.cancelWebTokenAuthorization": function(w, v) {
+    w.uint(1225633185);
+    w.string(h(v, "webAuthToken"));
+  },
+  "auth.initFirebasePnvLogin": function(w, v) {
+    w.uint(1682904512);
+    var flags = 0;
+    var _exceptIds = v.exceptIds && v.exceptIds.length;
+    if (_exceptIds) flags |= 1;
+    w.uint(flags);
+    if (_exceptIds) w.vector(w.long, v.exceptIds);
+    w.int(h(v, "apiId"));
+    w.string(h(v, "apiHash"));
+  },
+  "auth.finishFirebasePnvLogin": function(w, v) {
+    w.uint(746916172);
+    w.string(h(v, "googleToken"));
+  },
+  "auth.firebasePnvSignUp": function(w, v) {
+    w.uint(2017422166);
+    var flags = 0;
+    if (v.noJoinedNotifications === true) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "firstName"));
+    w.string(h(v, "lastName"));
   },
   "account.registerDevice": function(w, v) {
     w.uint(3968205178);
@@ -60193,6 +61521,18 @@ var m = {
     w.object(h(v, "id"));
     w.object(h(v, "note"));
   },
+  "contacts.exportNoPaidMessagesToken": function(w, v) {
+    w.uint(2210760366);
+    var flags = 0;
+    if (v.revoke === true) flags |= 1;
+    if (v.temporary === true) flags |= 2;
+    w.uint(flags);
+  },
+  "contacts.importNoPaidMessagesToken": function(w, v) {
+    w.uint(900187850);
+    w.object(h(v, "userId"));
+    w.string(h(v, "token"));
+  },
   "messages.getMessages": function(w, v) {
     w.uint(1673946374);
     w.vector(w.object, h(v, "id"));
@@ -60416,6 +61756,7 @@ var m = {
     if (_suggestedPost) flags |= 8388608;
     var _scheduleRepeatPeriod = v.scheduleRepeatPeriod !== void 0;
     if (_scheduleRepeatPeriod) flags |= 16777216;
+    if (v.fromEphemeral === true) flags |= 33554432;
     w.uint(flags);
     w.object(h(v, "fromPeer"));
     w.vector(w.int, h(v, "id"));
@@ -61209,7 +62550,7 @@ var m = {
     if (_inAppOrigin) w.string(v.inAppOrigin);
   },
   "messages.acceptUrlAuth": function(w, v) {
-    w.uint(1738797278);
+    w.uint(417156754);
     var flags = 0;
     if (v.writeAllowed === true) flags |= 1;
     var _peer = v.peer !== void 0;
@@ -61222,12 +62563,15 @@ var m = {
     if (v.sharePhoneNumber === true) flags |= 8;
     var _matchCode = v.matchCode !== void 0;
     if (_matchCode) flags |= 16;
+    var _tonconnectSession = v.tonconnectSession !== void 0;
+    if (_tonconnectSession) flags |= 32;
     w.uint(flags);
     if (_flags_1) w.object(v.peer);
     if (_flags_1) w.int(v.msgId);
     if (_flags_1) w.int(v.buttonId);
     if (_url) w.string(v.url);
     if (_matchCode) w.string(v.matchCode);
+    if (_tonconnectSession) w.object(v.tonconnectSession);
   },
   "messages.hidePeerSettingsBar": function(w, v) {
     w.uint(1336717624);
@@ -62403,6 +63747,15 @@ var m = {
     if (_themeParams) w.object(v.themeParams);
     w.string(h(v, "platform"));
   },
+  "messages.setShareTheme": function(w, v) {
+    w.uint(1770691354);
+    w.object(h(v, "peer"));
+    w.object(h(v, "theme"));
+  },
+  "messages.getShareThemeBackdrops": function(w, v) {
+    w.uint(4099514098);
+    w.int(h(v, "hash"));
+  },
   "updates.getState": function(w) {
     w.uint(3990128682);
   },
@@ -63176,7 +64529,7 @@ var m = {
     if (_durationMonths) w.int(v.durationMonths);
   },
   "bots.setCustomVerification": function(w, v) {
-    w.uint(2341068733);
+    w.uint(4103366487);
     var flags = 0;
     var _bot = v.bot !== void 0;
     if (_bot) flags |= 1;
@@ -63186,14 +64539,17 @@ var m = {
     w.uint(flags);
     if (_bot) w.object(v.bot);
     w.object(h(v, "peer"));
-    if (_customDescription) w.string(v.customDescription);
+    if (_customDescription) w.object(v.customDescription);
   },
   "bots.getBotRecommendations": function(w, v) {
     w.uint(2713126933);
     w.object(h(v, "bot"));
   },
   "bots.checkUsername": function(w, v) {
-    w.uint(2280792475);
+    w.uint(3819719777);
+    var flags = 0;
+    if (v.additional === true) flags |= 1;
+    w.uint(flags);
     w.string(h(v, "username"));
   },
   "bots.createBot": function(w, v) {
@@ -63238,6 +64594,16 @@ var m = {
     w.uint(3877259280);
     w.long(h(v, "queryId"));
     w.object(h(v, "result"));
+  },
+  "bots.addUsername": function(w, v) {
+    w.uint(889307274);
+    w.object(h(v, "bot"));
+    w.string(h(v, "username"));
+  },
+  "bots.removeUsername": function(w, v) {
+    w.uint(3338933373);
+    w.object(h(v, "bot"));
+    w.string(h(v, "username"));
   },
   "payments.getPaymentForm": function(w, v) {
     w.uint(924093883);
@@ -63542,9 +64908,11 @@ var m = {
     w.vector(w.object, h(v, "stargift"));
   },
   "payments.getStarGiftWithdrawalUrl": function(w, v) {
-    w.uint(3496907688);
+    w.uint(3368714619);
+    var flags = 0;
+    w.uint(flags);
     w.object(h(v, "stargift"));
-    w.object(h(v, "password"));
+    w.bytes(h(v, "tmpPassword"));
   },
   "payments.toggleChatStarGiftNotifications": function(w, v) {
     w.uint(1626009505);
@@ -63679,6 +65047,121 @@ var m = {
   "payments.craftStarGift": function(w, v) {
     w.uint(2969135183);
     w.vector(w.object, h(v, "stargift"));
+  },
+  "payments.getCurrencyRates": function(w) {
+    w.uint(3545859048);
+  },
+  "payments.getOnrampProviders": function(w, v) {
+    w.uint(1061028060);
+    var flags = 0;
+    var _cryptoCurrency = v.cryptoCurrency !== void 0;
+    if (_cryptoCurrency) flags |= 1;
+    w.uint(flags);
+    if (_cryptoCurrency) w.string(v.cryptoCurrency);
+  },
+  "payments.getOnrampBaseCurrencies": function(w, v) {
+    w.uint(478932467);
+    w.string(h(v, "provider"));
+    w.string(h(v, "cryptoCurrency"));
+  },
+  "payments.getOnrampAvailability": function(w, v) {
+    w.uint(784505169);
+    var flags = 0;
+    var _baseCurrency = v.baseCurrency !== void 0;
+    if (_baseCurrency) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "provider"));
+    w.string(h(v, "cryptoCurrency"));
+    if (_baseCurrency) w.string(v.baseCurrency);
+  },
+  "payments.getOnrampLimits": function(w, v) {
+    w.uint(2162708989);
+    var flags = 0;
+    var _paymentMethod = v.paymentMethod !== void 0;
+    if (_paymentMethod) flags |= 1;
+    w.uint(flags);
+    w.string(h(v, "provider"));
+    w.string(h(v, "cryptoCurrency"));
+    w.string(h(v, "baseCurrency"));
+    if (_paymentMethod) w.string(v.paymentMethod);
+  },
+  "payments.getOnrampQuote": function(w, v) {
+    w.uint(3764798970);
+    var flags = 0;
+    var _baseAmount = v.baseAmount !== void 0;
+    if (_baseAmount) flags |= 1;
+    var _cryptoAmount = v.cryptoAmount !== void 0;
+    if (_cryptoAmount) flags |= 2;
+    var _paymentMethod = v.paymentMethod !== void 0;
+    if (_paymentMethod) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "provider"));
+    w.string(h(v, "cryptoCurrency"));
+    w.string(h(v, "baseCurrency"));
+    if (_baseAmount) w.string(v.baseAmount);
+    if (_cryptoAmount) w.string(v.cryptoAmount);
+    if (_paymentMethod) w.string(v.paymentMethod);
+  },
+  "payments.createOnrampSession": function(w, v) {
+    w.uint(2719579382);
+    var flags = 0;
+    var _paymentMethod = v.paymentMethod !== void 0;
+    if (_paymentMethod) flags |= 1;
+    var _baseCurrency = v.baseCurrency !== void 0;
+    if (_baseCurrency) flags |= 2;
+    var _baseAmount = v.baseAmount !== void 0;
+    if (_baseAmount) flags |= 4;
+    var _memo = v.memo !== void 0;
+    if (_memo) flags |= 8;
+    var _theme = v.theme !== void 0;
+    if (_theme) flags |= 16;
+    var _successReturnUrl = v.successReturnUrl !== void 0;
+    if (_successReturnUrl) flags |= 32;
+    var _failReturnUrl = v.failReturnUrl !== void 0;
+    if (_failReturnUrl) flags |= 64;
+    var _cryptoAmount = v.cryptoAmount !== void 0;
+    if (_cryptoAmount) flags |= 128;
+    w.uint(flags);
+    w.string(h(v, "provider"));
+    w.string(h(v, "cryptoCurrency"));
+    w.string(h(v, "address"));
+    if (_paymentMethod) w.string(v.paymentMethod);
+    if (_baseCurrency) w.string(v.baseCurrency);
+    if (_baseAmount) w.string(v.baseAmount);
+    if (_memo) w.string(v.memo);
+    if (_theme) w.string(v.theme);
+    if (_successReturnUrl) w.string(v.successReturnUrl);
+    if (_failReturnUrl) w.string(v.failReturnUrl);
+    if (_cryptoAmount) w.string(v.cryptoAmount);
+  },
+  "payments.withdrawStarGift": function(w, v) {
+    w.uint(3961532590);
+    var flags = 0;
+    if (v.keepOnProfile === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "stargift"));
+    w.bytes(h(v, "tmpPassword"));
+  },
+  "payments.depositStarGift": function(w, v) {
+    w.uint(3231902367);
+    var flags = 0;
+    if (v.hideSender === true) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "peer"));
+    w.string(h(v, "slug"));
+  },
+  "payments.displayStarGift": function(w, v) {
+    w.uint(1252389118);
+    var flags = 0;
+    var _peer = v.peer !== void 0;
+    if (_peer) flags |= 1;
+    w.uint(flags);
+    if (_peer) w.object(v.peer);
+    w.string(h(v, "slug"));
+  },
+  "payments.deleteStarGift": function(w, v) {
+    w.uint(1020983466);
+    w.object(h(v, "stargift"));
   },
   "stickers.createStickerSet": function(w, v) {
     w.uint(2418125671);
@@ -64710,7 +66193,7 @@ var m = {
     w.object(h(v, "participant"));
   },
   "ephemeral.sendMessage": function(w, v) {
-    w.uint(1758187679);
+    w.uint(3129827125);
     var flags = 0;
     var _queryId = v.queryId !== void 0;
     if (_queryId) flags |= 1;
@@ -64724,8 +66207,14 @@ var m = {
     if (_richMessage) flags |= 16;
     var _replyTo = v.replyTo !== void 0;
     if (_replyTo) flags |= 32;
+    if (v.invertMedia === true) flags |= 64;
+    if (v.welcome === true) flags |= 128;
+    var _peer = v.peer !== void 0;
+    if (_peer) flags |= 256;
+    if (v.anchor === true) flags |= 512;
+    if (v.noforwards === true) flags |= 1024;
     w.uint(flags);
-    w.object(h(v, "peer"));
+    if (_peer) w.object(v.peer);
     w.object(h(v, "receiverId"));
     if (_queryId) w.long(v.queryId);
     w.string(h(v, "message"));
@@ -64737,8 +66226,12 @@ var m = {
     if (_replyTo) w.object(v.replyTo);
   },
   "ephemeral.deleteMessage": function(w, v) {
-    w.uint(2747323665);
-    w.object(h(v, "peer"));
+    w.uint(2465654679);
+    var flags = 0;
+    var _peer = v.peer !== void 0;
+    if (_peer) flags |= 1;
+    w.uint(flags);
+    if (_peer) w.object(v.peer);
     w.object(h(v, "receiverId"));
     w.int(h(v, "id"));
   },
@@ -64760,7 +66253,7 @@ var m = {
     if (_data) w.bytes(v.data);
   },
   "ephemeral.editMessage": function(w, v) {
-    w.uint(334647534);
+    w.uint(3483136603);
     var flags = 0;
     var _message = v.message !== void 0;
     if (_message) flags |= 1;
@@ -64770,14 +66263,236 @@ var m = {
     if (_replyMarkup) flags |= 4;
     var _media = v.media !== void 0;
     if (_media) flags |= 8;
+    var _richMessage = v.richMessage !== void 0;
+    if (_richMessage) flags |= 16;
+    if (v.invertMedia === true) flags |= 32;
+    if (v.welcome === true) flags |= 64;
+    var _peer = v.peer !== void 0;
+    if (_peer) flags |= 128;
     w.uint(flags);
-    w.object(h(v, "peer"));
+    if (_peer) w.object(v.peer);
     w.object(h(v, "receiverId"));
     w.int(h(v, "id"));
     if (_message) w.string(v.message);
     if (_media) w.object(v.media);
     if (_entities) w.vector(w.object, v.entities);
     if (_replyMarkup) w.object(v.replyMarkup);
+    if (_richMessage) w.object(v.richMessage);
+  },
+  "ephemeral.deleteWelcomeMessage": function(w, v) {
+    w.uint(3900877281);
+    w.object(h(v, "peer"));
+    w.int(h(v, "id"));
+  },
+  "ephemeral.deleteAllWelcomeMessages": function(w, v) {
+    w.uint(1934595873);
+    w.object(h(v, "peer"));
+  },
+  "ephemeral.getWelcomeMessages": function(w, v) {
+    w.uint(3684352397);
+    w.object(h(v, "peer"));
+    w.long(h(v, "hash"));
+  },
+  "toncenter.performApiRequest": function(w, v) {
+    w.uint(2373705057);
+    var flags = 0;
+    if (v.post === true) flags |= 1;
+    var _query = v.query !== void 0;
+    if (_query) flags |= 2;
+    var _payload = v.payload !== void 0;
+    if (_payload) flags |= 4;
+    w.uint(flags);
+    w.string(h(v, "endpoint"));
+    if (_query) w.string(v.query);
+    if (_payload) w.string(v.payload);
+  },
+  "toncenter.getStreamingUrl": function(w) {
+    w.uint(3450823623);
+  },
+  "wallet.getState": function(w) {
+    w.uint(2877535034);
+  },
+  "wallet.getUserAddresses": function(w, v) {
+    w.uint(1383456733);
+    var flags = 0;
+    if (v.force === true) flags |= 1;
+    w.uint(flags);
+    w.vector(w.object, h(v, "id"));
+    w.vector(w.string, h(v, "addresses"));
+  },
+  "wallet.getTransactions": function(w, v) {
+    w.uint(2827160195);
+    var flags = 0;
+    if (v.inbound === true) flags |= 1;
+    if (v.outbound === true) flags |= 2;
+    w.uint(flags);
+    w.string(h(v, "offset"));
+    w.int(h(v, "limit"));
+  },
+  "wallet.getTransactionsByIDs": function(w, v) {
+    w.uint(2166155958);
+    w.vector(w.string, h(v, "id"));
+  },
+  "wallet.getTransactionsByMsgHash": function(w, v) {
+    w.uint(2797304157);
+    w.vector(w.string, h(v, "msgHash"));
+  },
+  "wallet.exportSecretPhrase": function(w, v) {
+    w.uint(2423769516);
+    var flags = 0;
+    var _password = v.password !== void 0;
+    if (_password) flags |= 1;
+    w.uint(flags);
+    if (_password) w.object(v.password);
+  },
+  "wallet.fetchEncryptedSecretPhrasePart": function(w, v) {
+    w.uint(4114163151);
+    w.string(h(v, "token"));
+    w.bytes(h(v, "publicKey"));
+  },
+  "wallet.replaceWallet": function(w, v) {
+    w.uint(3636932332);
+    var flags = 0;
+    var _password = v.password !== void 0;
+    if (_password) flags |= 1;
+    w.uint(flags);
+    w.object(h(v, "wallet"));
+    if (_password) w.object(v.password);
+  },
+  "wallet.disableBackup": function(w, v) {
+    w.uint(185331930);
+    var flags = 0;
+    var _password = v.password !== void 0;
+    if (_password) flags |= 1;
+    var _newPublicKey = v.newPublicKey !== void 0;
+    if (_newPublicKey) flags |= 2;
+    var _proof = v.proof !== void 0;
+    if (_proof) flags |= 4;
+    w.uint(flags);
+    if (_password) w.object(v.password);
+    if (_newPublicKey) w.bytes(v.newPublicKey);
+    if (_proof) w.object(v.proof);
+  },
+  "wallet.getBackupHolderDcs": function(w) {
+    w.uint(3514422420);
+  },
+  "wallet.enableBackup": function(w, v) {
+    w.uint(1157678373);
+    var flags = 0;
+    var _newPublicKey = v.newPublicKey !== void 0;
+    if (_newPublicKey) flags |= 2;
+    var _proof = v.proof !== void 0;
+    if (_proof) flags |= 4;
+    w.uint(flags);
+    w.vector(w.bytes, h(v, "parts"));
+    if (_newPublicKey) w.bytes(v.newPublicKey);
+    if (_proof) w.object(v.proof);
+  },
+  "wallet.getProofChallenge": function(w) {
+    w.uint(539354775);
+  },
+  "wallet.sendTransfer": function(w, v) {
+    w.uint(3655719394);
+    var flags = 0;
+    var _dataGasless = v.dataGasless !== void 0;
+    if (_dataGasless) flags |= 1;
+    w.uint(flags);
+    w.bytes(h(v, "dataNormal"));
+    if (_dataGasless) w.bytes(v.dataGasless);
+    w.object(h(v, "userId"));
+    w.long(h(v, "randomId"));
+  },
+  "wallet.getGaslessInfo": function(w) {
+    w.uint(1949167777);
+  },
+  "wallet.getExistingWaltBalance": function(w) {
+    w.uint(1763656544);
+  },
+  "wallet.getNfts": function(w, v) {
+    w.uint(2350052260);
+    w.string(h(v, "offset"));
+    w.int(h(v, "limit"));
+  },
+  "wallet.tonConnectCreateSession": function(w, v) {
+    w.uint(3432190022);
+    w.string(h(v, "dappClientId"));
+    w.string(h(v, "manifestUrl"));
+  },
+  "wallet.tonConnectRegisterKey": function(w, v) {
+    w.uint(864800540);
+    w.long(h(v, "sessionId"));
+    w.string(h(v, "clientId"));
+  },
+  "wallet.tonConnectSubmitConnectResult": function(w, v) {
+    w.uint(3267364729);
+    var flags = 0;
+    if (v.error === true) flags |= 1;
+    var _traceId = v.traceId !== void 0;
+    if (_traceId) flags |= 2;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    w.bytes(h(v, "challengeAnswer"));
+    w.bytes(h(v, "body"));
+    if (_traceId) w.string(v.traceId);
+  },
+  "wallet.tonConnectGetPending": function(w, v) {
+    w.uint(296673381);
+    var flags = 0;
+    var _dappClientId = v.dappClientId !== void 0;
+    if (_dappClientId) flags |= 1;
+    var _sessionId = v.sessionId !== void 0;
+    if (_sessionId) flags |= 2;
+    w.uint(flags);
+    if (_dappClientId) w.string(v.dappClientId);
+    if (_sessionId) w.long(v.sessionId);
+  },
+  "wallet.tonConnectClaimRequest": function(w, v) {
+    w.uint(1723169601);
+    var flags = 0;
+    var _challengeAnswer = v.challengeAnswer !== void 0;
+    if (_challengeAnswer) flags |= 1;
+    if (v.declined === true) flags |= 2;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    w.int(h(v, "msgId"));
+    w.string(h(v, "appRequestId"));
+    if (_challengeAnswer) w.bytes(v.challengeAnswer);
+  },
+  "wallet.tonConnectSubmitResponse": function(w, v) {
+    w.uint(4207312188);
+    var flags = 0;
+    var _traceId = v.traceId !== void 0;
+    if (_traceId) flags |= 1;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    w.int(h(v, "msgId"));
+    w.bytes(h(v, "body"));
+    if (_traceId) w.string(v.traceId);
+  },
+  "wallet.tonConnectNextEventId": function(w, v) {
+    w.uint(2002612804);
+    w.long(h(v, "sessionId"));
+  },
+  "wallet.tonConnectCloseSession": function(w, v) {
+    w.uint(3594478030);
+    var flags = 0;
+    var _body = v.body !== void 0;
+    if (_body) flags |= 1;
+    w.uint(flags);
+    w.long(h(v, "sessionId"));
+    if (_body) w.bytes(v.body);
+  },
+  "wallet.tonConnectGetSessions": function(w) {
+    w.uint(2818553198);
+  },
+  "wallet.setCardStickers": function(w, v) {
+    w.uint(109382060);
+    var flags = 0;
+    var _bgNftAddress = v.bgNftAddress !== void 0;
+    if (_bgNftAddress) flags |= 1;
+    w.uint(flags);
+    w.vector(w.object, h(v, "stickers"));
+    if (_bgNftAddress) w.string(v.bgNftAddress);
   },
   "mtcute.customMethod": function(w, v) {
     w.raw(h(v, "bytes"));
@@ -65082,6 +66797,8 @@ var m = {
     "messageActionNoForwardsToggle": 12,
     "messageActionNoForwardsRequest": 16,
     "messageActionManagedBotCreated": 12,
+    "messageActionChatJoinedViaCommunity": 12,
+    "messageActionNoPaidMessagesTokenUsed": 4,
     "photoEmpty": 12,
     "geoPointEmpty": 4,
     "inputNotifyUsers": 4,
@@ -65209,6 +66926,7 @@ var m = {
     "speakingInGroupCallAction": 4,
     "sendMessageHistoryImportAction": 8,
     "sendMessageChooseStickerAction": 4,
+    "sendMessageStopDraftAction": 12,
     "inputPrivacyKeyStatusTimestamp": 4,
     "inputPrivacyKeyChatInvite": 4,
     "inputPrivacyKeyPhoneCall": 4,
@@ -65295,6 +67013,7 @@ var m = {
     "messageEntityFormattedDate": 20,
     "messageEntityDiffInsert": 12,
     "messageEntityDiffDelete": 12,
+    "messageEntityTonAddress": 12,
     "inputChannelEmpty": 4,
     "inputChannel": 20,
     "messageRange": 12,
@@ -65582,6 +67301,22 @@ var m = {
     "joinChatBotResultQueued": 4,
     "account.webBrowserSettingsNotModified": 4,
     "communityPeerRequest": 32,
+    "buttonTypeDefault": 4,
+    "buttonTypeRequestPhone": 4,
+    "buttonTypeRequestGeoLocation": 4,
+    "inlineButtonTypeGame": 4,
+    "inlineButtonTypeBuy": 4,
+    "inlineButtonTypeUserProfile": 12,
+    "inlineButtonTypeDisabled": 4,
+    "richButtonStyle": 8,
+    "ephemeral.welcomeMessagesNotModified": 4,
+    "walletStateEmpty": 8,
+    "walletTransactionPeerUnsupported": 4,
+    "walletTransactionPeerTelegramGift": 8,
+    "inputWalletNew": 4,
+    "tonConnectNextEventId": 12,
+    "shareThemeDefault": 4,
+    "shareThemeBackdropsNotModified": 4,
     "auth.logOut": 4,
     "auth.resetAuthorizations": 4,
     "auth.exportAuthorization": 8,
@@ -65649,6 +67384,7 @@ var m = {
     "contacts.blockFromReplies": 12,
     "contacts.exportContactToken": 4,
     "contacts.getBirthdays": 4,
+    "contacts.exportNoPaidMessagesToken": 8,
     "messages.receivedMessages": 8,
     "messages.getFullChat": 12,
     "messages.getDhConfig": 12,
@@ -65697,6 +67433,7 @@ var m = {
     "messages.getAvailableEffects": 8,
     "messages.getPaidReactionPrivacy": 4,
     "messages.getEmojiGameInfo": 4,
+    "messages.getShareThemeBackdrops": 8,
     "updates.getState": 4,
     "help.getConfig": 4,
     "help.getNearestDc": 4,
@@ -65730,6 +67467,7 @@ var m = {
     "payments.getStarGiftActiveAuctions": 12,
     "payments.resolveStarGiftOffer": 12,
     "payments.getStarGiftUpgradeAttributes": 12,
+    "payments.getCurrencyRates": 4,
     "phone.getCallConfig": 4,
     "phone.receivedCall": 24,
     "phone.declineConferenceCallInvite": 8,
@@ -65749,6 +67487,14 @@ var m = {
     "smsjobs.getStatus": 4,
     "aicompose.getTones": 12,
     "communities.getJoinedCommunities": 4,
+    "toncenter.getStreamingUrl": 4,
+    "wallet.getState": 4,
+    "wallet.getBackupHolderDcs": 4,
+    "wallet.getProofChallenge": 4,
+    "wallet.getGaslessInfo": 4,
+    "wallet.getExistingWaltBalance": 4,
+    "wallet.tonConnectNextEventId": 12,
+    "wallet.tonConnectGetSessions": 4,
     "mt_dh_gen_ok": 52,
     "mt_dh_gen_retry": 52,
     "mt_dh_gen_fail": 52,
@@ -65791,21 +67537,8 @@ class MtSecurityError extends MtcuteError {
 class MtUnsupportedError extends MtcuteError {
 }
 class MtTypeAssertionError extends MtcuteError {
-  /**
-   * Context at which the error occurred.
-   * Usually a user-friendly string containing name
-   * of the high-level API method, name of the TL
-   * RPC method, and path of the entity,
-   * like this: `signIn (@ auth.signIn -> user)`
-   */
-  context;
-  /** Expected TL type */
-  expected;
-  /** Actual TL type */
-  actual;
-  constructor(context, expected, actual) {
-    super(`Type assertion error at ${context}: expected ${expected}, but got ${actual}`);
-    this.context = context;
+  constructor(expected, actual) {
+    super(`Type assertion failed: expected ${expected}, got ${actual}`);
     this.expected = expected;
     this.actual = actual;
   }
@@ -65825,24 +67558,24 @@ function hasValueAtKey(k, v) {
     return a[k] === v;
   };
 }
-function assertTypeIs(context, obj, expected) {
+function assertTypeIs(obj, expected) {
   if (obj._ !== expected) {
-    throw new MtTypeAssertionError(context, expected, obj._);
+    throw new MtTypeAssertionError(expected, obj._);
   }
 }
-function assertTypeIsNot(context, obj, expectedNot) {
+function assertTypeIsNot(obj, expectedNot) {
   if (obj._ === expectedNot) {
-    throw new MtTypeAssertionError(context, `not ${expectedNot}`, obj._);
+    throw new MtTypeAssertionError(`not ${expectedNot}`, obj._);
   }
 }
-function mtpAssertTypeIs(context, obj, expected) {
+function mtpAssertTypeIs(obj, expected) {
   if (obj._ !== expected) {
-    throw new MtTypeAssertionError(context, expected, obj._);
+    throw new MtTypeAssertionError(expected, obj._);
   }
 }
-function assertTrue(context, cond) {
+function assertTrue(method, cond) {
   if (!cond) {
-    throw new MtTypeAssertionError(context, "true", "false");
+    throw new MtcuteError(`${method} returned false`);
   }
 }
 function isTlRpcError(obj) {
@@ -65857,7 +67590,7 @@ function _isAny$1() {
     return false;
   };
 }
-const LAYER = 228;
+const LAYER = 232;
 class RpcError extends Error {
   constructor(code, text) {
     super("Telegram API error " + code + ": " + text);
@@ -65865,7 +67598,7 @@ class RpcError extends Error {
     this.text = text;
   }
   static is(err, text) {
-    return err.constructor === RpcError && (!text || err.text === text);
+    return err != null && err.constructor === RpcError && (!text || err.text === text);
   }
   is(text) {
     return this.text === text;
@@ -66153,7 +67886,11 @@ class ConfigManager extends AsyncResource {
       autoReload: true
     });
   }
-  async findOption(params) {
+  /**
+   * Find all DC options matching the given params,
+   * ordered from the most preferred to the least preferred
+   */
+  async findOptions(params) {
     if (this.isStale) await this.update();
     const data = this.getCached();
     const options = data.dcOptions.filter((opt) => {
@@ -66163,18 +67900,16 @@ class ConfigManager extends AsyncResource {
       if (opt.cdn && !params.cdn) return false;
       return opt.id === params.dcId;
     });
-    if (params.preferMedia && params.preferIpv6) {
-      const r = options.find((opt) => opt.mediaOnly && opt.ipv6);
-      if (r) return r;
-    }
-    if (params.preferMedia) {
-      const r = options.find((opt) => opt.mediaOnly);
-      if (r) return r;
-    }
-    if (params.preferIpv6) {
-      const r = options.find((opt) => opt.ipv6);
-      if (r) return r;
-    }
+    const rank = (opt) => {
+      if (params.preferMedia && params.preferIpv6 && opt.mediaOnly && opt.ipv6) return 0;
+      if (params.preferMedia && opt.mediaOnly) return 1;
+      if (params.preferIpv6 && opt.ipv6) return 2;
+      return 3;
+    };
+    return options.sort((a, b) => rank(a) - rank(b));
+  }
+  async findOption(params) {
+    const options = await this.findOptions(params);
     return options[0];
   }
 }
@@ -66617,6 +68352,10 @@ let PersistentConnection$1 = class PersistentConnection {
         this.#connectAbort = void 0;
         const oldConnection = this.#connection;
         this.#connection = void 0;
+        try {
+          oldConnection?.close();
+        } catch {
+        }
         await this.params.onClose?.();
         if (this.#closed) {
           this.#closed.resolve();
@@ -67386,7 +69125,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
   log.debug("starting PQ handshake (temp = %b), nonce = %h", expiresIn, nonce);
   await sendPlainMessage({ _: "mt_req_pq_multi", nonce });
   const resPq = await readNext();
-  mtpAssertTypeIs("auth step 1", resPq, "mt_resPQ");
+  mtpAssertTypeIs(resPq, "mt_resPQ");
   if (!equal(resPq.nonce, nonce)) {
     throw new MtSecurityError("Step 1: invalid nonce from server");
   }
@@ -67433,7 +69172,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
     encryptedData
   });
   const serverDhParams = await readNext();
-  mtpAssertTypeIs("auth step 2", serverDhParams, "mt_server_DH_params_ok");
+  mtpAssertTypeIs(serverDhParams, "mt_server_DH_params_ok");
   if (!equal(serverDhParams.nonce, nonce)) {
     throw new MtSecurityError("Step 2: invalid nonce from server");
   }
@@ -67453,7 +69192,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
   if (!equal(innerDataHash, crypto.sha1(plainTextAnswer.subarray(20, serverDhInnerReader.pos)))) {
     throw new MtSecurityError("Step 3: invalid inner data hash");
   }
-  mtpAssertTypeIs("auth step 3", serverDhInner, "mt_server_DH_inner_data");
+  mtpAssertTypeIs(serverDhInner, "mt_server_DH_inner_data");
   if (!equal(serverDhInner.nonce, nonce)) {
     throw new Error("Step 3: invalid nonce from server");
   }
@@ -67515,7 +69254,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
     });
     const dhGen = await readNext();
     if (!isAnySet_client_DH_params_answer(dhGen)) {
-      throw new MtTypeAssertionError("auth step 4", "set_client_DH_params_answer", dhGen._);
+      throw new MtTypeAssertionError("set_client_DH_params_answer", dhGen._);
     }
     if (!equal(dhGen.nonce, nonce)) {
       throw new MtSecurityError("Step 4: invalid nonce from server");
@@ -67525,7 +69264,7 @@ async function doAuthorization(connection, crypto, expiresIn) {
     }
     log.debug("DH result: %s", dhGen._);
     if (dhGen._ === "mt_dh_gen_fail") {
-      throw new MtTypeAssertionError("auth step 4", "!mt_dh_gen_fail", dhGen._);
+      throw new MtTypeAssertionError("not mt_dh_gen_fail", dhGen._);
     }
     if (dhGen._ === "mt_dh_gen_retry") {
       const expectedHash2 = crypto.sha1(concat3(newNonce, [2], authKeyAuxHash));
@@ -67924,11 +69663,18 @@ class MtprotoSession {
     else writer.object(content);
     return messageId;
   }
-  resetLastPing(withTime = false) {
+  resetLastPing(withTime = false, keepPending = false) {
     if (withTime) this.lastPingTime = 0;
-    if (!this.lastPingMsgId.isZero()) {
+    if (!keepPending && !this.lastPingMsgId.isZero()) {
       this.pendingMessages.delete(this.lastPingMsgId);
     }
+    this.lastPingMsgId = Long.ZERO;
+  }
+  forgetPendingPings() {
+    for (const [msgId, info] of this.pendingMessages) {
+      if (info._ === "ping") this.pendingMessages.delete(msgId);
+    }
+    this.lastPingTime = 0;
     this.lastPingMsgId = Long.ZERO;
   }
   addToChain(chainId, msgId) {
@@ -68095,6 +69841,21 @@ class ConnectionFloodController {
   }
 }
 
+const CONNECT_TIMEOUT = 15e3;
+const MAX_CONNECT_TIMEOUT = 6e4;
+const DC_FAILURE_TTL = 6e5;
+class ConnectTimeoutError extends MtTimeoutError {
+}
+function getDcOptionAddressKey(dc) {
+  return `${prettify(dc.ipAddress, { encloseIpv6: true })}:${dc.port}`;
+}
+function isPlainMessage(data) {
+  if (data.length < 8) return false;
+  for (let i = 0; i < 8; i++) {
+    if (data[i] !== 0) return false;
+  }
+  return true;
+}
 let nextConnectionUid = 0;
 class PersistentConnection {
   constructor(params, log) {
@@ -68107,20 +69868,18 @@ class PersistentConnection {
       this._floodControl = new ConnectionFloodController(params.floodControl);
       this._floodControl.setLogger(log.create("flood"));
     }
+    const seen = /* @__PURE__ */ new Set();
+    this._dcCandidates = [params.dc, ...params.dcFallbacks ?? []].filter((dc) => {
+      const key = getDcOptionAddressKey(dc);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    this._fumanAddress = params.dc;
     this._onInactivityTimeout = this._onInactivityTimeout.bind(this);
+    this._connect = this._connect.bind(this);
     this._fuman = new PersistentConnection$1({
-      connect: async (dc, abortSignal) => {
-        if (this._floodControl) {
-          if (!this._connectAbort || this._connectAbort.signal.aborted) {
-            this._connectAbort = new AbortController();
-          }
-          this._updateLogPrefix();
-          await this._floodControl.wait(this._connectAbort.signal);
-        }
-        this._updateLogPrefix();
-        this.log.debug("connecting to %j", dc);
-        return params.transport.connect(dc, abortSignal);
-      },
+      connect: this._connect,
       strategy: params.reconnectionStrategy,
       onOpen: this._onOpen.bind(this),
       onClose: this._onClose.bind(this),
@@ -68153,6 +69912,14 @@ class PersistentConnection {
   // closed (manually or for good) — otherwise close() would block until
   // the wait expires, and the connect would still proceed afterwards
   _connectAbort;
+  // params.dc followed by params.dcFallbacks, params.dc is always one of these
+  _dcCandidates;
+  _dcCandidateIdx = 0;
+  // failed connects in a row, used to report when none of the addresses work
+  _failedConnects = 0;
+  // fuman requires the same address object on every .connect() call,
+  // the actual address is picked from _dcCandidates in _connect()
+  _fumanAddress;
   onWait = new Emitter();
   onUsable = new Emitter();
   onError = new Emitter();
@@ -68167,6 +69934,93 @@ class PersistentConnection {
     } else {
       this.log.prefix = `${uidPrefix}[disconnected] `;
     }
+  }
+  async _connect(_, abortSignal) {
+    if (this._floodControl) {
+      if (!this._connectAbort || this._connectAbort.signal.aborted) {
+        this._connectAbort = new AbortController();
+      }
+      this._updateLogPrefix();
+      await this._floodControl.wait(this._connectAbort.signal);
+    }
+    this._updateLogPrefix();
+    if (this._dcCandidates.length < 2) {
+      this.log.debug("connecting to %j", this.params.dc);
+      return this.params.transport.connect(this.params.dc, abortSignal);
+    }
+    this._skipFailedDcs();
+    const dc = this.params.dc;
+    const dcKey = getDcOptionAddressKey(dc);
+    const round = Math.floor(this._failedConnects / this._dcCandidates.length);
+    const connectTimeout = Math.min(CONNECT_TIMEOUT * 2 ** round, MAX_CONNECT_TIMEOUT);
+    this.log.debug("connecting to %j (timeout: %d ms)", dc, connectTimeout);
+    const timeoutAbort = new AbortController();
+    const attemptSignal = combineAbortSignals(abortSignal, timeoutAbort.signal);
+    const timeout = setTimeoutWrap(
+      () => timeoutAbort.abort(new ConnectTimeoutError(connectTimeout)),
+      connectTimeout
+    );
+    try {
+      const conn = await this.params.transport.connect(dc, attemptSignal);
+      this.params.dcFailures?.delete(dcKey);
+      this._failedConnects = 0;
+      return conn;
+    } catch (e) {
+      if (abortSignal.aborted) throw e;
+      this.params.dcFailures?.set(dcKey, performance.now());
+      this._failedConnects += 1;
+      const err = attemptSignal.aborted ? attemptSignal.reason : e;
+      this._switchToNextDc(err);
+      if (this._failedConnects % this._dcCandidates.length === 0) {
+        const addresses = this._dcCandidates.map(getDcOptionAddressKey).join(", ");
+        this.onError.emit(new MtcuteError(`Could not connect to DC ${dc.id} using any of its addresses (${addresses})`));
+      }
+      throw err;
+    } finally {
+      clearTimeoutWrap(timeout);
+    }
+  }
+  _setDc(idx) {
+    const dc = this._dcCandidates[idx];
+    this._dcCandidateIdx = idx;
+    this.params.dc = dc;
+    this._codec = this.params.transport.packetCodec(dc);
+    this._codec.setup?.(this.params.crypto, this.log);
+  }
+  _switchToNextDc(err) {
+    const prev = this.params.dc;
+    this._setDc((this._dcCandidateIdx + 1) % this._dcCandidates.length);
+    this.log.warn(
+      "failed to connect to %s (%s), will try %s next",
+      getDcOptionAddressKey(prev),
+      err.message,
+      getDcOptionAddressKey(this.params.dc)
+    );
+  }
+  _skipFailedDcs() {
+    const failures = this.params.dcFailures;
+    if (!failures?.size) return;
+    const now = performance.now();
+    for (let i = 0; i < this._dcCandidates.length; i++) {
+      const idx = (this._dcCandidateIdx + i) % this._dcCandidates.length;
+      const failedAt = failures.get(getDcOptionAddressKey(this._dcCandidates[idx]));
+      if (failedAt === void 0 || now - failedAt > DC_FAILURE_TTL) {
+        if (i !== 0) {
+          const prev = this.params.dc;
+          this._setDc(idx);
+          this.log.debug("%s failed recently, using %s", getDcOptionAddressKey(prev), getDcOptionAddressKey(this.params.dc));
+        }
+        return;
+      }
+    }
+  }
+  /**
+   * Remove queued (not yet sent) unencrypted messages.
+   * Should be called when an authorization attempt fails, since otherwise
+   * its messages would be sent once connected, confusing the next attempt
+   */
+  _dropQueuedPlainMessages() {
+    this._sendOnceConnected = this._sendOnceConnected.filter((it) => !isPlainMessage(it));
   }
   get isConnected() {
     return this._fuman.isConnected;
@@ -68211,25 +70065,28 @@ class PersistentConnection {
   }
   _onError(err) {
     this._updateLogPrefix();
-    if (!(err instanceof ConnectionClosedError)) {
+    if (!(err instanceof ConnectionClosedError) && !(err instanceof ConnectTimeoutError)) {
       this.handleError(err);
     }
     return "reconnect";
   }
   async changeTransport(transport) {
+    const reconnect = this._fuman.isConnected || this._fuman.isConnecting || this._fuman.isWaiting;
     this._connectAbort?.abort();
     await this._fuman.close();
+    this._failedConnects = 0;
+    this.params.transport = transport;
     this._codec = transport.packetCodec(this.params.dc);
     this._codec.setup?.(this.params.crypto, this.log);
-    await this._fuman.changeTransport(transport.connect.bind(transport));
-    this._fuman.connect(this.params.dc);
+    await this._fuman.changeTransport(this._connect);
+    if (reconnect && !this._inactive && !this._disconnectedManually && !this._destroyed) this.connect();
   }
   connect() {
     if (this._destroyed) {
       this.log.warn("tried to connect a destroyed connection, ignoring");
       return;
     }
-    this._fuman.connect(this.params.dc);
+    this._fuman.connect(this._fumanAddress);
     this._inactive = false;
   }
   reconnect() {
@@ -68251,6 +70108,7 @@ class PersistentConnection {
     this._disconnectedManually = true;
     this._connectAbort?.abort();
     await this._fuman.close();
+    this._failedConnects = 0;
   }
   async destroy() {
     if (this._inactivityTimeout) {
@@ -68418,7 +70276,7 @@ class SessionConnection extends PersistentConnection {
     this._session.initConnectionCalled = false;
     this._flushTimer.reset();
     this._salts.isFetching = false;
-    this._session.resetLastPing(true);
+    this._session.forgetPendingPings();
     for (const timeout of this._session.pendingGetStateTimeouts.values()) {
       clearTimeoutWrap(timeout);
     }
@@ -68519,6 +70377,11 @@ class SessionConnection extends PersistentConnection {
       this.onRequestAuth.emit();
       return;
     }
+    if (!this.isConnected) {
+      this.log.debug("_authorize(): not connected yet, deferring");
+      if (this._inactive) this.connect();
+      return;
+    }
     this._session.authorizationPending = true;
     this.onAuthBegin.emit();
     doAuthorization(this, this._crypto).then(([authKey, serverSalt, timeOffset]) => {
@@ -68535,6 +70398,7 @@ class SessionConnection extends PersistentConnection {
       this._session.authorizationPending = false;
       if (this._destroyed) return;
       this.log.error("Authorization error: %e", err);
+      this._dropQueuedPlainMessages();
       this.handleError(err);
       this.reconnect();
     });
@@ -68645,6 +70509,7 @@ class SessionConnection extends PersistentConnection {
     }).catch((err) => {
       if (this._destroyed) return;
       this.log.error("PFS Authorization error: %e", err);
+      this._dropQueuedPlainMessages();
       if (this._isPfsBindingPendingInBackground) {
         this._isPfsBindingPendingInBackground = false;
         return this._authorizePfs(true);
@@ -69033,7 +70898,9 @@ class SessionConnection extends PersistentConnection {
         break;
       case "ping":
         this.log.debug("ping (msg_id = %l) failed because of %s", msgId, reason);
-        this._session.resetLastPing(true);
+        if (this._session.lastPingMsgId.eq(msgId)) {
+          this._session.resetLastPing(true);
+        }
         break;
       case "rpc": {
         const rpc = msgInfo.rpc;
@@ -69106,14 +70973,17 @@ class SessionConnection extends PersistentConnection {
     if (info.pingId.neq(pingId)) {
       this.log.warn("received pong to %l, but expected ping_id = %l (got %l)", msgId, info.pingId, pingId);
     }
-    const rtt = performance.now() - this._session.lastPingTime;
+    this._session.pendingMessages.delete(msgId);
+    const rtt = performance.now() - info.sentAt;
     this._session.lastPingRtt = rtt;
     if (info.containerId.neq(msgId)) {
       this._onMessageAcked(info.containerId);
     }
     this.log.debug("received pong: msg_id %l, ping_id %l, rtt = %dms", msgId, pingId, rtt);
-    this._session.resetLastPing();
-    this._flushTimer.emitBefore(this._session.lastPingTime + this._pingMustDelay());
+    if (this._session.lastPingMsgId.eq(msgId)) {
+      this._session.resetLastPing();
+      this._flushTimer.emitBefore(this._session.lastPingTime + this._pingMustDelay());
+    }
   }
   _onBadServerSalt(msg) {
     this._salts.currentSalt = msg.newServerSalt;
@@ -69506,10 +71376,11 @@ class SessionConnection extends PersistentConnection {
     const active = this._online && this._isActive();
     if (active && !this._active) {
       this._session.lastActivityTime = now;
-      this._session.resetLastPing(true);
+      this._session.resetLastPing(true, true);
     }
     this._active = active;
-    if (this._checkTimeouts(now)) return;
+    const connected = this.isConnected;
+    if (connected && this._checkTimeouts(now)) return;
     try {
       this._doFlush();
     } catch (e) {
@@ -69522,9 +71393,10 @@ class SessionConnection extends PersistentConnection {
     } else {
       const nextPingTime = this._session.lastPingMsgId.isZero() ? this._session.lastPingTime + this._pingMustDelay() : Infinity;
       const nextGetScheduleTime = this._session.getStateSchedule.raw[0]?.getState || Infinity;
-      const readDeadline = this._session.lastActivityTime + this._readDisconnectDelay();
-      const pingDeadline = this._session.lastPingMsgId.isZero() ? Infinity : this._session.lastPingTime + this._pingDisconnectDelay();
-      this._flushTimer.emitBefore(Math.min(nextPingTime, nextGetScheduleTime, readDeadline, pingDeadline));
+      const readDeadline = connected ? this._session.lastActivityTime + this._readDisconnectDelay() : Infinity;
+      const pingDeadline = !connected || this._session.lastPingMsgId.isZero() ? Infinity : this._session.lastPingTime + this._pingDisconnectDelay();
+      const nextFlush = Math.min(nextPingTime, nextGetScheduleTime, readDeadline, pingDeadline);
+      if (nextFlush !== Infinity) this._flushTimer.emitBefore(nextFlush);
     }
   }
   _doFlush() {
@@ -69688,6 +71560,7 @@ class SessionConnection extends PersistentConnection {
       const pingPending = {
         _: "ping",
         pingId,
+        sentAt: now,
         containerId: pingMsgId
       };
       this._session.pendingMessages.set(pingMsgId, pingPending);
@@ -70151,11 +72024,12 @@ const defaultConnectionCountDelegate = (kind, dcId, isPremium) => {
   }
 };
 class DcConnectionManager {
-  constructor(manager, dcId, _dcs, isPrimary = false) {
+  constructor(manager, dcId, _dcs, isPrimary = false, _fallbacks) {
     this.manager = manager;
     this.dcId = dcId;
     this._dcs = _dcs;
     this.isPrimary = isPrimary;
+    this._fallbacks = _fallbacks;
     this._log = this.manager._log.create("dc-manager");
     this._log.prefix = `[DC ${dcId}] `;
     const managerParams = this.manager.params;
@@ -70164,6 +72038,8 @@ class DcConnectionManager {
       initConnection: this.manager._initConnectionParams,
       transport: this.manager._transport,
       dc: this._dcs.media,
+      dcFallbacks: this._fallbacks?.media,
+      dcFailures: this._dcFailures,
       testMode: managerParams.testMode,
       reconnectionStrategy: this.manager._reconnectionStrategy,
       layer: managerParams.layer,
@@ -70183,6 +72059,7 @@ class DcConnectionManager {
     const mainParams = baseConnectionParams();
     mainParams.isMainConnection = true;
     mainParams.dc = _dcs.main;
+    mainParams.dcFallbacks = _fallbacks?.main;
     if (isPrimary) {
       mainParams.inactivityTimeout = void 0;
     }
@@ -70220,6 +72097,8 @@ class DcConnectionManager {
     this._setupMulti("downloadSmall");
   }
   _salts = new ServerSaltManager();
+  // shared between all connections of this dc, so that they don't all have to wait for the same unreachable address
+  _dcFailures = /* @__PURE__ */ new Map();
   _log;
   /** Main connection pool */
   main;
@@ -70351,7 +72230,7 @@ class NetworkManager {
       _: "initConnection",
       deviceModel,
       systemVersion: "1.0",
-      appVersion: "0.31.0",
+      appVersion: "0.32.6",
       systemLangCode: "en",
       langPack: "",
       // "langPacks are for official apps only"
@@ -70382,14 +72261,14 @@ class NetworkManager {
   _primaryDcRecreationPromise;
   _updateHandler;
   async _findDcOptions(dcId) {
-    const main = await this.config.findOption({
+    const [main, ...mainRest] = await this.config.findOptions({
       dcId,
       allowIpv6: this.params.useIpv6,
       preferIpv6: this.params.useIpv6,
       allowMedia: false,
       cdn: false
     });
-    const media = await this.config.findOption({
+    const [media, ...mediaRest] = await this.config.findOptions({
       dcId,
       allowIpv6: this.params.useIpv6,
       preferIpv6: this.params.useIpv6,
@@ -70400,7 +72279,20 @@ class NetworkManager {
     if (!main || !media) {
       throw new MtArgumentError(`Could not find DC ${dcId}`);
     }
-    return { main, media };
+    return {
+      dcs: { main, media },
+      fallbacks: {
+        main: [...mainRest, ...this._findFallbackDcs(dcId, false)],
+        media: [...mediaRest, ...this._findFallbackDcs(dcId, true)]
+      }
+    };
+  }
+  // the config (or the stored primary dc) may only contain addresses that are unreachable
+  // from the current network, so we also try the supplied fallback addresses
+  _findFallbackDcs(dcId, allowMedia) {
+    return this.params.fallbackDcs?.filter(
+      (dc) => dc.id === dcId && (!dc.ipv6 || this.params.useIpv6) && (allowMedia || !dc.mediaOnly)
+    ) ?? [];
   }
   _resetOnNetworkChange;
   _destroyed = false;
@@ -70445,8 +72337,8 @@ class NetworkManager {
       this._dcCreationPromise.set(dcId, promise.promise);
       this._log.debug("creating new DC %d", dcId);
       try {
-        const dcOptions = await this._findDcOptions(dcId);
-        const dc = new DcConnectionManager(this, dcId, dcOptions);
+        const { dcs, fallbacks } = await this._findDcOptions(dcId);
+        const dc = new DcConnectionManager(this, dcId, dcs, false, fallbacks);
         if (!await dc.loadKeys()) {
           dc.main.requestAuth();
         }
@@ -70482,7 +72374,10 @@ class NetworkManager {
       throw new MtArgumentError("DC manager already exists");
     }
     this._resetOnNetworkChange = this.params.platform.onNetworkChanged?.(this.notifyNetworkChanged.bind(this));
-    const dc = new DcConnectionManager(this, defaultDcs.main.id, defaultDcs, true);
+    const dc = new DcConnectionManager(this, defaultDcs.main.id, defaultDcs, true, {
+      main: this._findFallbackDcs(defaultDcs.main.id, false),
+      media: this._findFallbackDcs(defaultDcs.main.id, true)
+    });
     this._dcConnections.set(defaultDcs.main.id, dc);
     await this._switchPrimaryDc(dc);
   }
@@ -70514,7 +72409,7 @@ class NetworkManager {
       if (isTlRpcError(res)) {
         throw new MtcuteError(`Failed to import (${res.errorCode}: ${res.errorMessage})`);
       }
-      assertTypeIs("auth.importAuthorization", res, "auth.authorization");
+      assertTypeIs(res, "auth.authorization");
       promise.resolve();
     } catch (e) {
       this._log.warn("failed to export auth to dc %d: %s", manager.dcId, e);
@@ -70595,11 +72490,11 @@ class NetworkManager {
       throw new MtcuteError("Network manager is destroyed");
     }
     if (newDc === this._primaryDc?.dcId) return;
-    const options = await this._findDcOptions(newDc);
+    const { dcs, fallbacks } = await this._findDcOptions(newDc);
     if (!this._dcConnections.has(newDc)) {
-      this._dcConnections.set(newDc, new DcConnectionManager(this, newDc, options, true));
+      this._dcConnections.set(newDc, new DcConnectionManager(this, newDc, dcs, true, fallbacks));
     }
-    await this._storage.dcs.store(options);
+    await this._storage.dcs.store(dcs);
     await this._switchPrimaryDc(this._dcConnections.get(newDc));
   }
   call;
@@ -70830,6 +72725,8 @@ class MtClient {
         emitError: params.onError,
         isPremium: false,
         useIpv6: Boolean(params.useIpv6),
+        // custom defaultDcs may point to a different network, where telegram's addresses make no sense
+        fallbackDcs: params.fallbackDcs ?? (!params.testMode && !params.defaultDcs ? defaultProductionFallbackDcs : void 0),
         onUsable: this.onUsable.emit.bind(this.onUsable),
         onConnecting: this.onConnecting.emit.bind(this.onConnecting),
         onNetworkChanged: this.onNetworkChanged.emit.bind(this.onNetworkChanged),
@@ -70988,7 +72885,7 @@ class AppConfigManager {
     if (!this._resource.isStale && this._object) return this._object;
     const obj = tlJsonToJson((await this._resource.get()).config);
     if (!obj || typeof obj !== "object") {
-      throw new MtTypeAssertionError("appConfig", "object", typeof obj);
+      throw new MtTypeAssertionError("object", typeof obj);
     }
     this._object = obj;
     return this._object;
@@ -71282,7 +73179,7 @@ class CurrentUserService extends BaseService {
     await this._driver.save?.();
   }
   async storeFrom(user) {
-    assertTypeIs("storeFrom", user, "user");
+    assertTypeIs(user, "user");
     const obj = {
       userId: user.id,
       isBot: user.bot,
@@ -72212,8 +74109,10 @@ function walkRichText(text, visitor) {
     case "textAutoEmail":
     case "textAutoPhone":
     case "textBankCard":
+    case "textTonAddress":
     case "textDate":
     case "textMentionName":
+    case "textButton":
       walkRichText(text.text, visitor);
       break;
     case "textConcat":
@@ -72300,6 +74199,7 @@ function walkPageBlock(block, visitor) {
     case "pageBlockAudio":
     case "pageBlockMap":
     case "inputPageBlockMap":
+    case "pageBlockDocument":
       walkPageCaption(block.caption, visitor);
       break;
     case "pageBlockCover":
@@ -72315,6 +74215,9 @@ function walkPageBlock(block, visitor) {
       walkPageCaption(block.caption, visitor);
       break;
     case "pageBlockChannel":
+      break;
+    case "pageBlockButtonRow":
+      for (const button of block.buttons) walkRichText(button.text, visitor);
       break;
     case "pageBlockTable":
       walkRichText(block.title, visitor);
@@ -72416,13 +74319,13 @@ function createDummyUpdate(pts, ptsCount, channelId = 0) {
     }
   ]);
 }
-function assertIsUpdatesGroup(ctx, upd) {
+function assertIsUpdatesGroup(upd) {
   switch (upd._) {
     case "updates":
     case "updatesCombined":
       return;
   }
-  throw new MtTypeAssertionError(ctx, "updates | updatesCombined", upd._);
+  throw new MtTypeAssertionError("updates | updatesCombined", upd._);
 }
 
 const WARN_EVERY = 100;
@@ -72709,7 +74612,7 @@ class UpdatesManager {
   /// /////////////////////////////////////////// IMPLEMENTATION //////////////////////////////////////////////
   async _fetchUpdatesState() {
     const { client, lock, log } = this;
-    await lock.acquire();
+    const guard = await lock.acquire();
     log.debug("fetching initial state");
     try {
       let fetchedState = await client.call({ _: "updates.getState" });
@@ -72748,7 +74651,7 @@ class UpdatesManager {
       log.debug("loaded initial state: pts=%d, qts=%d, date=%d, seq=%d", this.pts, this.qts, this.date, this.seq);
     } catch (e) {
       if (RpcError.is(e, "AUTH_KEY_UNREGISTERED")) {
-        lock.release();
+        guard.release();
         this.log.debug("received AUTH_KEY_UNREGISTERED, stopping updates loop");
         this.stopLoop();
         return;
@@ -72756,10 +74659,10 @@ class UpdatesManager {
       if (this.client.isConnected) {
         log.error("failed to fetch updates state: %s", e);
       }
-      lock.release();
+      guard.release();
       throw e;
     }
-    lock.release();
+    guard.release();
   }
   async _loadUpdatesStorage() {
     const storedState = await this.client.storage.updates.getState();
@@ -72886,6 +74789,24 @@ class UpdatesManager {
       index.set(bare, cached);
       return true;
     }
+    async function fetchEntitiesPeers(entities) {
+      if (!entities) return true;
+      for (const ent of entities) {
+        if (ent._ === "messageEntityMentionName" && !await fetchPeer(ent.userId)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    async function fetchRichMessagePeers(richMessage) {
+      if (!richMessage) return true;
+      const richMessagePeers = /* @__PURE__ */ new Set();
+      collectRichMessagePeerIds(richMessage, richMessagePeers);
+      for (const peer of richMessagePeers) {
+        if (!await fetchPeer(peer)) return false;
+      }
+      return true;
+    }
     switch (upd._) {
       case "updateNewMessage":
       case "updateNewChannelMessage":
@@ -72909,20 +74830,8 @@ class UpdatesManager {
           }
           if (!await fetchPeer(msg.viaBotId)) return missing;
           if (!await fetchPeer(msg.guestchatViaFrom)) return missing;
-          if (msg.entities) {
-            for (const ent of msg.entities) {
-              if (ent._ === "messageEntityMentionName") {
-                if (!await fetchPeer(ent.userId)) return missing;
-              }
-            }
-          }
-          if (msg.richMessage) {
-            const richMessagePeers = /* @__PURE__ */ new Set();
-            collectRichMessagePeerIds(msg.richMessage, richMessagePeers);
-            for (const peer of richMessagePeers) {
-              if (!await fetchPeer(peer)) return missing;
-            }
-          }
+          if (!await fetchEntitiesPeers(msg.entities)) return missing;
+          if (!await fetchRichMessagePeers(msg.richMessage)) return missing;
           if (msg.media) {
             switch (msg.media._) {
               case "messageMediaContact":
@@ -72960,6 +74869,22 @@ class UpdatesManager {
               if (!await fetchPeer(msg.action.fromId)) return missing;
               if (!await fetchPeer(msg.action.toId)) return missing;
               break;
+            case "messageActionChatJoinedViaCommunity":
+              if (!await fetchPeer(toggleChannelIdMark(msg.action.communityId), true)) {
+                return missing;
+              }
+              break;
+            case "messageActionChangeCommunity":
+              if (msg.action.communityId !== void 0 && !await fetchPeer(toggleChannelIdMark(msg.action.communityId), true)) {
+                return missing;
+              }
+              break;
+            case "messageActionGiftPremium":
+            case "messageActionGiftCode":
+            case "messageActionStarGift":
+            case "messageActionStarGiftUnique":
+              if (!await fetchEntitiesPeers(msg.action.message?.entities)) return missing;
+              break;
           }
         }
         break;
@@ -72970,6 +74895,8 @@ class UpdatesManager {
         if (!await fetchPeer(msg.peerId, true)) return missing;
         if (!await fetchPeer(msg.fromId)) return missing;
         if (!await fetchPeer(msg.receiverId)) return missing;
+        if (!await fetchEntitiesPeers(msg.entities)) return missing;
+        if (!await fetchRichMessagePeers(msg.richMessage)) return missing;
         break;
       }
       case "updateEphemeralBotCallbackQuery":
@@ -72977,20 +74904,8 @@ class UpdatesManager {
         if (!await fetchPeer(upd.userId)) return missing;
         break;
       case "updateDraftMessage":
-        if ("entities" in upd.draft && upd.draft.entities) {
-          for (const ent of upd.draft.entities) {
-            if (ent._ === "messageEntityMentionName") {
-              if (!await fetchPeer(ent.userId)) return missing;
-            }
-          }
-        }
-        if ("richMessage" in upd.draft && upd.draft.richMessage) {
-          const richMessagePeers = /* @__PURE__ */ new Set();
-          collectRichMessagePeerIds(upd.draft.richMessage, richMessagePeers);
-          for (const peer of richMessagePeers) {
-            if (!await fetchPeer(peer)) return missing;
-          }
-        }
+        if ("entities" in upd.draft && !await fetchEntitiesPeers(upd.draft.entities)) return missing;
+        if ("richMessage" in upd.draft && !await fetchRichMessagePeers(upd.draft.richMessage)) return missing;
     }
     return missing;
   }
@@ -74062,7 +75977,7 @@ async function computePasswordHash(crypto, password, salt1, salt2) {
   return SH(await crypto.pbkdf2(PH1(password, salt1, salt2), salt1, 1e5), salt2);
 }
 async function computeNewPasswordHash(crypto, algo, password) {
-  assertTypeIs("account.getPassword", algo, "passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow");
+  assertTypeIs(algo, "passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow");
   const salt1 = alloc(algo.salt1.length + 32);
   salt1.set(algo.salt1);
   crypto.randomFill(salt1.subarray(algo.salt1.length));
@@ -74487,6 +76402,23 @@ class MessageEntity {
         return { kind: "emoji", emojiId: this.raw.documentId };
       case "messageEntityBankCard":
         return { kind: "bank_card" };
+      case "messageEntityTonAddress":
+        return { kind: "ton_address" };
+      case "messageEntityDiffInsert":
+        return { kind: "diff_insert" };
+      case "messageEntityDiffDelete":
+        return { kind: "diff_delete" };
+      case "messageEntityDiffReplace":
+        return { kind: "diff_replace", oldText: this.raw.oldText };
+      case "messageEntityFormattedDate":
+        return {
+          kind: "date_time",
+          date: new Date(this.raw.date * 1e3),
+          relative: this.raw.relative,
+          timePrecision: this.raw.longTime ? "long" : this.raw.shortTime ? "short" : "none",
+          datePrecision: this.raw.longDate ? "long" : this.raw.shortDate ? "short" : "none",
+          showDayOfWeek: this.raw.dayOfWeek
+        };
     }
     return { kind: "unknown" };
   }
@@ -75346,7 +77278,7 @@ class User {
    */
   raw;
   constructor(user) {
-    assertTypeIs("User#init", user, "user");
+    assertTypeIs(user, "user");
     this.raw = user;
   }
   /** Unique identifier for this user or bot */
@@ -76000,7 +77932,7 @@ async function resendCode(client, params) {
     },
     { abortSignal }
   );
-  assertTypeIs("sendCode", res, "auth.sentCode");
+  assertTypeIs(res, "auth.sentCode");
   return new SentCode$1(res);
 }
 
@@ -76137,9 +78069,12 @@ async function signInQr(client, params) {
             if (RpcError.is(e, "SESSION_PASSWORD_NEEDED") && params.password) {
               return await handle2fa(params.password);
             }
+            if (RpcError.is(e, "AUTH_TOKEN_EXPIRED") && params.password) {
+              continue loop;
+            }
             throw e;
           }
-          assertTypeIs("auth.importLoginToken", res2, "auth.loginTokenSuccess");
+          assertTypeIs(res2, "auth.loginTokenSuccess");
           break loop;
         }
         case "auth.loginTokenSuccess":
@@ -76153,7 +78088,7 @@ async function signInQr(client, params) {
       },
       { abortSignal }
     );
-    assertTypeIs("users.getUsers", self, "user");
+    assertTypeIs(self, "user");
     await client.notifyLoggedIn(self);
     return new User$2(self);
   } finally {
@@ -76184,7 +78119,7 @@ function getMe(client) {
       }
     ]
   }).then(async ([user]) => {
-    assertTypeIs("getMe (@ users.getUsers)", user, "user");
+    assertTypeIs(user, "user");
     await client.storage.self.storeFrom(user);
     return new User$2(user);
   });
@@ -76383,6 +78318,217 @@ async function startTest(client, params) {
       }
     }
   });
+}
+
+function _normalizePeerId(peerId) {
+  if (typeof peerId === "object") {
+    if (isAnyPeer(peerId)) {
+      peerId = getMarkedPeerId(peerId);
+    } else if ("inputPeer" in peerId) {
+      peerId = peerId.inputPeer;
+    } else {
+      peerId = toInputPeer(peerId);
+    }
+  }
+  if (typeof peerId === "object") {
+    switch (peerId._) {
+      case "mtcute.dummyInputPeerMinUser":
+        return peerId.userId;
+      case "mtcute.dummyInputPeerMinChannel":
+        return toggleChannelIdMark(peerId.channelId);
+      default:
+        return peerId;
+    }
+  }
+  return peerId;
+}
+function _handleContactsResolvedPeer(peerId, res) {
+  if (res.peer._ === "peerUser") {
+    const id = res.peer.userId;
+    const found = res.users.find((it) => it.id === id);
+    if (found && found._ === "user") {
+      if (!found.accessHash) {
+        throw new MtPeerNotFoundError(
+          `Peer (user) with username ${peerId} was found, but it has no access hash`
+        );
+      }
+      return {
+        _: "inputPeerUser",
+        userId: found.id,
+        accessHash: found.accessHash
+      };
+    }
+  } else if (res.peer._ === "peerChannel") {
+    const id = res.peer.channelId;
+    const found = res.chats.find((it) => it.id === id);
+    if (found) {
+      if (!(found._ === "channel" || found._ === "channelForbidden")) {
+        throw new MtTypeAssertionError("channel", found._);
+      }
+      if (!found.accessHash) {
+        throw new MtPeerNotFoundError(`Peer (channel) with ${peerId} was found, but it has no access hash`);
+      }
+      return {
+        _: "inputPeerChannel",
+        channelId: found.id,
+        accessHash: found.accessHash
+      };
+    }
+  } else {
+    throw new MtTypeAssertionError("user | channel", res.peer._);
+  }
+  unreachable();
+}
+
+async function resolvePhoneNumber(client, phone, force = false) {
+  phone = phone.replace(/[@+\s()]/g, "");
+  if (!phone.match(/^\d+$/)) {
+    throw new MtArgumentError("phone should only contain digits");
+  }
+  if (!force) {
+    const fromStorage = await client.storage.peers.getByPhone(phone);
+    if (fromStorage) return fromStorage;
+  }
+  let res;
+  try {
+    res = await client.call({
+      _: "contacts.resolvePhone",
+      phone
+    });
+  } catch (e) {
+    if (RpcError.is(e, "PHONE_NOT_OCCUPIED")) {
+      throw new MtPeerNotFoundError(`Peer with phone number ${phone} was not found`);
+    } else {
+      throw e;
+    }
+  }
+  return _handleContactsResolvedPeer(phone, res);
+}
+
+async function resolvePeer(client, peerId, force = false) {
+  peerId = _normalizePeerId(peerId);
+  if (typeof peerId === "object") {
+    return peerId;
+  }
+  if (typeof peerId === "number" && !force) {
+    const fromStorage = await client.storage.peers.getById(peerId);
+    if (fromStorage) return fromStorage;
+  }
+  if (typeof peerId === "string") {
+    if (peerId === "self" || peerId === "me") return { _: "inputPeerSelf" };
+    peerId = peerId.replace(/^@/, "");
+    if (peerId.match(/^\d/)) {
+      throw new MtArgumentError(
+        `Invalid username: ${peerId}. If you wanted to resolve by user ID, pass a number instead. If you wanted to resolve by phone number, use resolvePhoneNumber instead.`
+      );
+    }
+    if (!force) {
+      const fromStorage = await client.storage.peers.getByUsername(peerId);
+      if (fromStorage) return fromStorage;
+    }
+    try {
+      const res = await client.call({
+        _: "contacts.resolveUsername",
+        username: peerId
+      });
+      return _handleContactsResolvedPeer(peerId, res);
+    } catch (e) {
+      if (RpcError.is(e, "USERNAME_NOT_OCCUPIED") || RpcError.is(e, "USERNAME_INVALID")) {
+        throw new MtPeerNotFoundError(`Peer with username ${peerId} was not found`);
+      } else {
+        throw e;
+      }
+    }
+  }
+  const [peerType, bareId] = parseMarkedPeerId(peerId);
+  if (peerType === "chat") {
+    return {
+      _: "inputPeerChat",
+      chatId: bareId
+    };
+  }
+  const cached = await client.storage.peers.getCompleteById(peerId, true);
+  if (cached && (cached._ === "channel" || cached._ === "user")) {
+    const [username] = extractUsernames(cached);
+    if (username) {
+      const resolved = await resolvePeer(client, username, true).catch(() => null);
+      if (resolved && getMarkedPeerId(resolved) === peerId) {
+        return resolved;
+      }
+    }
+    if (cached._ === "user" && cached.phone) {
+      const resolved = await resolvePhoneNumber(client, cached.phone, true).catch(() => null);
+      if (resolved && getMarkedPeerId(resolved) === peerId) {
+        return resolved;
+      }
+    }
+  }
+  switch (peerType) {
+    case "user": {
+      try {
+        const res = await _getUsersBatched(client, {
+          _: "inputUser",
+          userId: bareId,
+          accessHash: Long.ZERO
+        });
+        if (res != null && res._ === "user" && res.accessHash != null) {
+          return {
+            _: "inputPeerUser",
+            userId: bareId,
+            accessHash: res.accessHash
+          };
+        }
+      } catch (e) {
+        if (!RpcError.is(e, "USER_INVALID")) throw e;
+      }
+      break;
+    }
+    case "channel": {
+      try {
+        const res = await _getChannelsBatched(client, {
+          _: "inputChannel",
+          channelId: bareId,
+          accessHash: Long.ZERO
+        });
+        if (res != null && res._ === "channel" && res.accessHash != null) {
+          return {
+            _: "inputPeerChannel",
+            channelId: bareId,
+            accessHash: res.accessHash
+          };
+        }
+      } catch (e) {
+        if (RpcError.is(e, "COMMUNITY_ID_INVALID")) {
+          if (client.storage.self.getCached(true)?.isBot) {
+            return {
+              _: "inputPeerChannel",
+              channelId: bareId,
+              accessHash: Long.ZERO
+            };
+          }
+        } else if (!RpcError.is(e, "CHANNEL_INVALID")) {
+          throw e;
+        }
+      }
+      break;
+    }
+  }
+  throw new MtPeerNotFoundError(`Peer ${peerId} is not found in local cache`);
+}
+async function resolveUser(client, peerId, force = false) {
+  return toInputUser(await resolvePeer(client, peerId, force), peerId);
+}
+async function resolveChannel(client, peerId, force = false) {
+  return toInputChannel(await resolvePeer(client, peerId, force), peerId);
+}
+
+async function addBotUsername(client, botId, username) {
+  const r = await client.call({
+    _: "bots.addUsername",
+    bot: await resolveUser(client, botId),
+    username
+  });
+  assertTrue("bots.addUsername", r);
 }
 
 const FileType = FileType$1;
@@ -76625,208 +78771,6 @@ function encodeWaveform(wf) {
     dv.setUint16(byteIdx, dv.getUint16(byteIdx, true) | value, true);
   }
   return result.slice(0, bytesCount);
-}
-
-function _normalizePeerId(peerId) {
-  if (typeof peerId === "object") {
-    if (isAnyPeer(peerId)) {
-      peerId = getMarkedPeerId(peerId);
-    } else if ("inputPeer" in peerId) {
-      peerId = peerId.inputPeer;
-    } else {
-      peerId = toInputPeer(peerId);
-    }
-  }
-  if (typeof peerId === "object") {
-    switch (peerId._) {
-      case "mtcute.dummyInputPeerMinUser":
-        return peerId.userId;
-      case "mtcute.dummyInputPeerMinChannel":
-        return toggleChannelIdMark(peerId.channelId);
-      default:
-        return peerId;
-    }
-  }
-  return peerId;
-}
-function _handleContactsResolvedPeer(peerId, res) {
-  if (res.peer._ === "peerUser") {
-    const id = res.peer.userId;
-    const found = res.users.find((it) => it.id === id);
-    if (found && found._ === "user") {
-      if (!found.accessHash) {
-        throw new MtPeerNotFoundError(
-          `Peer (user) with username ${peerId} was found, but it has no access hash`
-        );
-      }
-      return {
-        _: "inputPeerUser",
-        userId: found.id,
-        accessHash: found.accessHash
-      };
-    }
-  } else if (res.peer._ === "peerChannel") {
-    const id = res.peer.channelId;
-    const found = res.chats.find((it) => it.id === id);
-    if (found) {
-      if (!(found._ === "channel" || found._ === "channelForbidden")) {
-        throw new MtTypeAssertionError("ResolvedPeer#chats", "channel", found._);
-      }
-      if (!found.accessHash) {
-        throw new MtPeerNotFoundError(`Peer (channel) with ${peerId} was found, but it has no access hash`);
-      }
-      return {
-        _: "inputPeerChannel",
-        channelId: found.id,
-        accessHash: found.accessHash
-      };
-    }
-  } else {
-    throw new MtTypeAssertionError("ResolvedPeer#peer", "user or channel", res.peer._);
-  }
-  unreachable();
-}
-
-async function resolvePhoneNumber(client, phone, force = false) {
-  phone = phone.replace(/[@+\s()]/g, "");
-  if (!phone.match(/^\d+$/)) {
-    throw new MtArgumentError("phone should only contain digits");
-  }
-  if (!force) {
-    const fromStorage = await client.storage.peers.getByPhone(phone);
-    if (fromStorage) return fromStorage;
-  }
-  let res;
-  try {
-    res = await client.call({
-      _: "contacts.resolvePhone",
-      phone
-    });
-  } catch (e) {
-    if (RpcError.is(e, "PHONE_NOT_OCCUPIED")) {
-      throw new MtPeerNotFoundError(`Peer with phone number ${phone} was not found`);
-    } else {
-      throw e;
-    }
-  }
-  return _handleContactsResolvedPeer(phone, res);
-}
-
-async function resolvePeer(client, peerId, force = false) {
-  peerId = _normalizePeerId(peerId);
-  if (typeof peerId === "object") {
-    return peerId;
-  }
-  if (typeof peerId === "number" && !force) {
-    const fromStorage = await client.storage.peers.getById(peerId);
-    if (fromStorage) return fromStorage;
-  }
-  if (typeof peerId === "string") {
-    if (peerId === "self" || peerId === "me") return { _: "inputPeerSelf" };
-    peerId = peerId.replace(/^@/, "");
-    if (peerId.match(/^\d/)) {
-      throw new MtArgumentError(
-        `Invalid username: ${peerId}. If you wanted to resolve by user ID, pass a number instead. If you wanted to resolve by phone number, use resolvePhoneNumber instead.`
-      );
-    }
-    if (!force) {
-      const fromStorage = await client.storage.peers.getByUsername(peerId);
-      if (fromStorage) return fromStorage;
-    }
-    try {
-      const res = await client.call({
-        _: "contacts.resolveUsername",
-        username: peerId
-      });
-      return _handleContactsResolvedPeer(peerId, res);
-    } catch (e) {
-      if (RpcError.is(e, "USERNAME_NOT_OCCUPIED") || RpcError.is(e, "USERNAME_INVALID")) {
-        throw new MtPeerNotFoundError(`Peer with username ${peerId} was not found`);
-      } else {
-        throw e;
-      }
-    }
-  }
-  const [peerType, bareId] = parseMarkedPeerId(peerId);
-  if (peerType === "chat") {
-    return {
-      _: "inputPeerChat",
-      chatId: bareId
-    };
-  }
-  const cached = await client.storage.peers.getCompleteById(peerId, true);
-  if (cached && (cached._ === "channel" || cached._ === "user")) {
-    const [username] = extractUsernames(cached);
-    if (username) {
-      const resolved = await resolvePeer(client, username, true).catch(() => null);
-      if (resolved && getMarkedPeerId(resolved) === peerId) {
-        return resolved;
-      }
-    }
-    if (cached._ === "user" && cached.phone) {
-      const resolved = await resolvePhoneNumber(client, cached.phone, true).catch(() => null);
-      if (resolved && getMarkedPeerId(resolved) === peerId) {
-        return resolved;
-      }
-    }
-  }
-  switch (peerType) {
-    case "user": {
-      try {
-        const res = await _getUsersBatched(client, {
-          _: "inputUser",
-          userId: bareId,
-          accessHash: Long.ZERO
-        });
-        if (res != null && res._ === "user" && res.accessHash != null) {
-          return {
-            _: "inputPeerUser",
-            userId: bareId,
-            accessHash: res.accessHash
-          };
-        }
-      } catch (e) {
-        if (!RpcError.is(e, "USER_INVALID")) throw e;
-      }
-      break;
-    }
-    case "channel": {
-      try {
-        const res = await _getChannelsBatched(client, {
-          _: "inputChannel",
-          channelId: bareId,
-          accessHash: Long.ZERO
-        });
-        if (res != null && res._ === "channel" && res.accessHash != null) {
-          return {
-            _: "inputPeerChannel",
-            channelId: bareId,
-            accessHash: res.accessHash
-          };
-        }
-      } catch (e) {
-        if (RpcError.is(e, "COMMUNITY_ID_INVALID")) {
-          if (client.storage.self.getCached(true)?.isBot) {
-            return {
-              _: "inputPeerChannel",
-              channelId: bareId,
-              accessHash: Long.ZERO
-            };
-          }
-        } else if (!RpcError.is(e, "CHANNEL_INVALID")) {
-          throw e;
-        }
-      }
-      break;
-    }
-  }
-  throw new MtPeerNotFoundError(`Peer ${peerId} is not found in local cache`);
-}
-async function resolveUser(client, peerId, force = false) {
-  return toInputUser(await resolvePeer(client, peerId, force), peerId);
-}
-async function resolveChannel(client, peerId, force = false) {
-  return toInputChannel(await resolvePeer(client, peerId, force), peerId);
 }
 
 const empty = ["", void 0];
@@ -77129,17 +79073,17 @@ async function uploadFile(client, params) {
   let readableEnded = false;
   const uploadNextPart = async () => {
     if (abortSignal?.aborted) return;
-    const thisIdx = idx++;
-    await lock.acquire();
-    if (readableEnded) {
-      lock.release();
+    const guard = await lock.acquire();
+    if (readableEnded || idx === partCount) {
+      guard.release();
       return;
     }
+    const thisIdx = idx++;
     let part;
     try {
       part = await exactly$1(readable, partSize, "truncate");
     } finally {
-      lock.release();
+      guard.release();
     }
     if (abortSignal?.aborted) return;
     const ended = part.length < partSize;
@@ -77180,11 +79124,10 @@ async function uploadFile(client, params) {
       floodSleepThreshold: Infinity,
       abortSignal
     });
-    if (!result) throw new Error(`Failed to upload part ${idx}`);
+    if (!result) throw new Error(`Failed to upload part ${thisIdx}`);
     if (abortSignal?.aborted) return;
     pos += part.length;
     params.progressCallback?.(pos, fileSize);
-    if (idx === partCount) return;
     return uploadNextPart();
   };
   let poolSize = partCount === -1 ? 1 : connectionPoolSize * requestsPerConnection;
@@ -77268,11 +79211,11 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
     return media;
   }
   if (isAnyInputPhoto(media)) {
-    assertTypeIs("normalizeInputMedia (@ photo)", media, "inputPhoto");
+    assertTypeIs(media, "inputPhoto");
     return { _: "inputMediaPhoto", id: media };
   }
   if (isAnyInputDocument(media)) {
-    assertTypeIs("normalizeInputMedia (@ document)", media, "inputDocument");
+    assertTypeIs(media, "inputDocument");
     return { _: "inputMediaDocument", id: media };
   }
   if (media.type === "venue") {
@@ -77296,7 +79239,8 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
       geoPoint: {
         _: "inputGeoPoint",
         lat: media.latitude,
-        long: media.longitude
+        long: media.longitude,
+        accuracyRadius: media.accuracy
       }
     };
   }
@@ -77306,7 +79250,8 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
       geoPoint: {
         _: "inputGeoPoint",
         lat: media.latitude,
-        long: media.longitude
+        long: media.longitude,
+        accuracyRadius: media.accuracy
       },
       stopped: media.stopped,
       heading: media.heading,
@@ -77363,21 +79308,7 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
     };
   }
   if (media.type === "poll" || media.type === "quiz") {
-    const answers = await Promise.all(media.answers.map((ans) => {
-      if (typeof ans === "string") return { _: "inputPollAnswer", text: inputTextToTl(ans) };
-      if (isAnyPollAnswer(ans)) return ans;
-      if ("media" in ans && ans.media) {
-        return _normalizeInputMedia(client, ans.media, params, true).then((m) => ({
-          _: "inputPollAnswer",
-          text: inputTextToTl(ans.text),
-          media: m
-        }));
-      }
-      return {
-        _: "inputPollAnswer",
-        text: inputTextToTl(ans.text)
-      };
-    }));
+    const answers = await Promise.all(media.answers.map((ans) => _normalizeInputPollAnswer(client, ans, params)));
     let correct;
     let solution;
     let solutionEntities;
@@ -77412,6 +79343,8 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
         revotingDisabled: media.disableRevoting,
         shuffleAnswers: media.shuffleAnswers,
         hideResultsUntilClose: media.hideResultsUntilClose,
+        subscribersOnly: media.subscribersOnly,
+        countriesIso2: media.countries,
         hash: Long.ZERO
       },
       correctAnswers: correct,
@@ -77459,7 +79392,7 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
         title: inputTextToTl(media.title),
         list: media.items.map((it, idx) => ({
           _: "todoItem",
-          id: idx,
+          id: idx + 1,
           title: inputTextToTl(it)
         }))
       }
@@ -77488,19 +79421,39 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
     inputFile = uploaded.inputFile;
     mime = uploaded.mime;
   };
+  const uploadPeer = params.uploadPeer ?? { _: "inputPeerSelf" };
   let videoCover;
   if (media.type === "video" && media.cover) {
     const inputMedia = await _normalizeInputMedia(client, media.cover, params);
-    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaPhoto");
-    videoCover = inputMedia.id;
+    if (inputMedia._ !== "inputMediaPhoto" && inputMedia._ !== "inputMediaPhotoExternal" && inputMedia._ !== "inputMediaUploadedPhoto") {
+      throw new MtArgumentError("media.cover must be a photo");
+    }
+    if (inputMedia._ === "inputMediaPhoto") {
+      videoCover = inputMedia.id;
+    } else {
+      const res = await client.call({
+        _: "messages.uploadMedia",
+        peer: uploadPeer,
+        media: inputMedia,
+        businessConnectionId: params.businessConnectionId
+      }, { abortSignal: params.abortSignal });
+      if (res._ !== "messageMediaPhoto" || res.photo?._ !== "photo") {
+        throw new MtArgumentError("media.cover must be a photo");
+      }
+      videoCover = {
+        _: "inputPhoto",
+        id: res.photo.id,
+        accessHash: res.photo.accessHash,
+        fileReference: res.photo.fileReference
+      };
+    }
   }
   let livePhotoVideo;
   if (media.type === "photo" && media.livePhotoVideo) {
     const inputMedia = await _normalizeInputMedia(client, media.livePhotoVideo, params, true);
-    assertTypeIs("uploadMediaIfNeeded", inputMedia, "inputMediaDocument");
+    assertTypeIs(inputMedia, "inputMediaDocument");
     livePhotoVideo = inputMedia.id;
   }
-  const uploadPeer = params.uploadPeer ?? { _: "inputPeerSelf" };
   const uploadMediaIfNeeded = async (inputMedia, photo) => {
     if (!uploadMedia) return inputMedia;
     const res = await client.call({
@@ -77510,8 +79463,8 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
       businessConnectionId: params.businessConnectionId
     }, { abortSignal: params.abortSignal });
     if (photo) {
-      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaPhoto");
-      assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.photo, "photo");
+      assertTypeIs(res, "messageMediaPhoto");
+      assertTypeIs(res.photo, "photo");
       return {
         _: "inputMediaPhoto",
         id: {
@@ -77526,8 +79479,8 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
         video: livePhotoVideo
       };
     }
-    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res, "messageMediaDocument");
-    assertTypeIs("normalizeInputMedia (@ messages.uploadMedia)", res.document, "document");
+    assertTypeIs(res, "messageMediaDocument");
+    assertTypeIs(res.document, "document");
     return {
       _: "inputMediaDocument",
       id: {
@@ -77673,6 +79626,15 @@ async function _normalizeInputMedia(client, media, params = {}, uploadMedia = fa
     false
   );
 }
+async function _normalizeInputPollAnswer(client, answer, params = {}) {
+  if (typeof answer !== "string" && isAnyPollAnswer(answer)) return answer;
+  if (typeof answer === "string" || "entities" in answer) return { _: "inputPollAnswer", text: inputTextToTl(answer) };
+  return {
+    _: "inputPollAnswer",
+    text: inputTextToTl(answer.text),
+    media: "media" in answer && answer.media ? await _normalizeInputMedia(client, answer.media, params, true) : void 0
+  };
+}
 
 async function resolvePeerMany(client, peerIds, normalizer) {
   const ret = [];
@@ -77732,7 +79694,7 @@ async function _uploadRichMedia(client, peer, id, media, params) {
     progressCallback: params.progressCallback?.bind(null, id)
   }, true);
   if (normalized._ !== "inputMediaPhoto" && normalized._ !== "inputMediaDocument") {
-    throw new MtTypeAssertionError("sendRichMessage (upload)", "inputMediaDocument | inputMediaPhoto", normalized._);
+    throw new MtTypeAssertionError("inputMediaDocument | inputMediaPhoto", normalized._);
   }
   if (cacheKey !== void 0) params.uploadCache.set(cacheKey, normalized);
   return normalized;
@@ -77825,7 +79787,7 @@ async function _normalizeInputRichMessage(client, peer, input, params) {
   for (const { block, media } of uploaded) {
     if (media._ === "inputMediaPhoto") {
       const photo = media.id;
-      assertTypeIs("sendRichMessage (upload)", photo, "inputPhoto");
+      assertTypeIs(photo, "inputPhoto");
       photos.push(photo);
       switch (block._) {
         case "pageBlockPhoto":
@@ -77842,7 +79804,7 @@ async function _normalizeInputRichMessage(client, peer, input, params) {
       }
     } else {
       const document = media.id;
-      assertTypeIs("sendRichMessage (upload)", document, "inputDocument");
+      assertTypeIs(document, "inputDocument");
       documents.push(document);
       switch (block._) {
         case "pageBlockVideo":
@@ -77850,6 +79812,9 @@ async function _normalizeInputRichMessage(client, peer, input, params) {
           break;
         case "pageBlockAudio":
           block.audioId = document.id;
+          break;
+        case "pageBlockDocument":
+          block.documentId = document.id;
           break;
         default:
           throw new MtArgumentError(`sendRichMessage: expected document ${document.id} to be used in a document block, but got ${block._}`);
@@ -77867,24 +79832,119 @@ async function _normalizeInputRichMessage(client, peer, input, params) {
   };
 }
 
+function toKeyboardStyle(style) {
+  if (!style) return void 0;
+  return {
+    _: "keyboardButtonStyle",
+    bgPrimary: style.bgPrimary,
+    bgDanger: style.bgDanger,
+    bgSuccess: style.bgSuccess,
+    icon: style.icon
+  };
+}
+function _toInlineButtonType(btn) {
+  switch (btn.type) {
+    case "url":
+      return { _: "inlineButtonTypeUrl", url: btn.url };
+    case "webview":
+      return { _: "inlineButtonTypeWebView", url: btn.url };
+    case "callback":
+      return { _: "inlineButtonTypeCallback", data: btn.data, requiresPassword: btn.requiresPassword };
+    case "switch_inline":
+      return {
+        _: "inlineButtonTypeSwitchInline",
+        samePeer: btn.currentChat,
+        query: btn.query ?? "",
+        peerTypes: btn.peerTypes
+      };
+    case "game":
+      return { _: "inlineButtonTypeGame" };
+    case "pay":
+      return { _: "inlineButtonTypeBuy" };
+    case "url_auth":
+      return {
+        _: "inputInlineButtonTypeUrlAuth",
+        url: btn.url,
+        fwdText: btn.fwdText,
+        requestWriteAccess: btn.requestWriteAccess,
+        bot: btn.bot ?? { _: "inputUserSelf" }
+      };
+    case "user_profile":
+      return { _: "inputInlineButtonTypeUserProfile", userId: btn.user };
+    case "copy":
+      return { _: "inlineButtonTypeCopy", copyText: btn.copyText ?? btn.text };
+    case "disabled":
+      return { _: "inlineButtonTypeDisabled" };
+    default:
+      throw new MtArgumentError(`"${btn.type}" buttons can only be used in reply keyboards`);
+  }
+}
+function toReplyButtonType(btn) {
+  switch (btn.type) {
+    case "text":
+      return { _: "buttonTypeDefault" };
+    case "request_contact":
+      return { _: "buttonTypeRequestPhone" };
+    case "request_geo":
+      return { _: "buttonTypeRequestGeoLocation" };
+    case "request_poll":
+      return { _: "buttonTypeRequestPoll", quiz: btn.quiz };
+    case "webview":
+      return { _: "buttonTypeSimpleWebView", url: btn.url };
+    case "request_peer":
+      return {
+        _: "inputButtonTypeRequestPeer",
+        nameRequested: btn.nameRequested,
+        usernameRequested: btn.usernameRequested,
+        photoRequested: btn.photoRequested,
+        buttonId: btn.buttonId,
+        peerType: btn.peerType,
+        maxQuantity: btn.count ?? 1
+      };
+    default:
+      throw new MtArgumentError(`"${btn.type}" buttons can only be used in inline keyboards`);
+  }
+}
+function _toInlineButton(btn) {
+  if ("_" in btn) {
+    if (btn._ !== "keyboardInlineButton") {
+      throw new MtArgumentError("reply keyboard buttons cannot be used in inline keyboards");
+    }
+    return btn;
+  }
+  return {
+    _: "keyboardInlineButton",
+    text: btn.text,
+    type: _toInlineButtonType(btn),
+    style: toKeyboardStyle(btn.style)
+  };
+}
+function _toReplyButton(btn) {
+  if ("_" in btn) {
+    if (btn._ !== "keyboardButton") {
+      throw new MtArgumentError("inline keyboard buttons cannot be used in reply keyboards");
+    }
+    return btn;
+  }
+  return {
+    _: "keyboardButton",
+    text: btn.text,
+    type: toReplyButtonType(btn),
+    style: toKeyboardStyle(btn.style)
+  };
+}
+
 function _rowsTo2d(rows) {
   return rows.map((it) => it.buttons);
 }
-function _2dToRows(arr, inline2) {
-  return arr.map((row) => {
-    if (!inline2) {
-      row = row.map(
-        (btn) => btn._ === "keyboardButtonWebView" ? {
-          ...btn,
-          _: "keyboardButtonSimpleWebView"
-        } : btn
-      );
-    }
-    return {
-      _: "keyboardButtonRow",
-      buttons: row
-    };
-  });
+function _inlineRowsTo2d(rows) {
+  return rows.map((it) => it.buttons);
+}
+function _2dToRows(arr) {
+  return arr.map((row) => ({ _: "keyboardButtonRow", buttons: row.map(_toReplyButton) }));
+}
+function _2dToInlineRows(arr) {
+  return arr.map((row) => ({ _: "keyboardInlineButtonRow", buttons: row.map(_toInlineButton) }));
 }
 function _convertToTl$2(obj) {
   if (!obj) return obj;
@@ -77897,8 +79957,9 @@ function _convertToTl$2(obj) {
         singleUse: obj.singleUse,
         selective: obj.selective,
         persistent: obj.persistent,
+        forceReply: obj.forceReply,
         placeholder: obj.placeholder,
-        rows: _2dToRows(obj.buttons, false)
+        rows: _2dToRows(obj.buttons)
       };
     case "reply_hide":
       return {
@@ -77915,7 +79976,8 @@ function _convertToTl$2(obj) {
     case "inline":
       return {
         _: "replyInlineMarkup",
-        rows: _2dToRows(obj.buttons, true)
+        forceReply: obj.forceReply,
+        rows: _2dToInlineRows(obj.buttons)
       };
     default:
       assertNever$1();
@@ -77931,6 +79993,7 @@ async function _convertToTl$1(client, obj) {
         message,
         entities,
         replyMarkup: _convertToTl$2(obj.replyMarkup),
+        noWebpage: obj.disableWebPreview,
         invertMedia: obj.invertMedia
       };
     }
@@ -77957,7 +80020,8 @@ async function _convertToTl$1(client, obj) {
         geoPoint: {
           _: "inputGeoPoint",
           lat: obj.latitude,
-          long: obj.longitude
+          long: obj.longitude,
+          accuracyRadius: obj.accuracy
         },
         // fields will be `undefined` if this is a `geo`
         heading: obj.heading,
@@ -78319,6 +80383,39 @@ async function answerCallbackQuery(client, queryId, params) {
   assertTrue("messages.setBotCallbackAnswer", r);
 }
 
+async function answerChatJoinRequestQuery(client, queryId, answer) {
+  let id;
+  if (Long.isLong(queryId)) {
+    id = queryId;
+  } else {
+    if (!queryId.queryId) {
+      throw new MtArgumentError("This join request has no query to answer");
+    }
+    id = queryId.queryId;
+  }
+  let result;
+  switch (answer.action) {
+    case "approve":
+      result = { _: "joinChatBotResultApproved" };
+      break;
+    case "decline":
+      result = { _: "joinChatBotResultDeclined" };
+      break;
+    case "queue":
+      result = { _: "joinChatBotResultQueued" };
+      break;
+    case "webview":
+      result = { _: "joinChatBotResultWebView", url: answer.url };
+      break;
+  }
+  const r = await client.call({
+    _: "bots.setJoinChatResults",
+    queryId: id,
+    result
+  });
+  assertTrue("bots.setJoinChatResults", r);
+}
+
 async function answerInlineQuery(client, queryId, results, params) {
   const { cacheTime = 300, gallery, private: priv, nextOffset, switchPm, switchWebview } = params ?? {};
   const [defaultGallery, tlResults] = await _convertToTl(client, results);
@@ -78352,6 +80449,25 @@ async function answerPreCheckoutQuery(client, queryId, params) {
     error
   });
   assertTrue("messages.setBotPrecheckoutResults", r);
+}
+
+async function checkBotUsername(client, username, params) {
+  return client.call({
+    _: "bots.checkUsername",
+    username,
+    additional: params?.additional
+  });
+}
+
+async function createBot(client, params) {
+  const res = await client.call({
+    _: "bots.createBot",
+    viaDeeplink: params.viaDeeplink,
+    name: params.name,
+    username: params.username,
+    managerId: await resolveUser(client, params.manager)
+  });
+  return new User$2(res);
 }
 
 async function _normalizeCommandScope(client, scope) {
@@ -78554,6 +80670,39 @@ async function getInlineGameHighScores(client, messageId, userId) {
   return res.scores.map((score) => new GameHighScore$2(score, peers));
 }
 
+class BotAccessSettings {
+  constructor(raw) {
+    this.raw = raw;
+  }
+  /** Whether access to the bot is restricted to its owner and {@link users} */
+  get isRestricted() {
+    return this.raw.restricted;
+  }
+  /** Users that can use the bot in addition to its owner */
+  get users() {
+    return this.raw.addUsers?.map((it) => new User$2(it)) ?? [];
+  }
+}
+const BotAccessSettings$1 = /* @__PURE__ */ memoizeGetters(BotAccessSettings, ["users"]);
+const BotAccessSettings$2 = /* @__PURE__ */ makeInspectable(BotAccessSettings$1);
+
+async function getManagedBotAccessSettings(client, botId) {
+  const res = await client.call({
+    _: "bots.getAccessSettings",
+    bot: await resolveUser(client, botId)
+  });
+  return new BotAccessSettings$2(res);
+}
+
+async function getManagedBotToken(client, botId, params) {
+  const res = await client.call({
+    _: "bots.exportBotToken",
+    bot: await resolveUser(client, botId),
+    revoke: params?.revoke ?? false
+  });
+  return res.token;
+}
+
 async function getMyCommands(client, params) {
   return client.call({
     _: "bots.getBotCommands",
@@ -78561,6 +80710,14 @@ async function getMyCommands(client, params) {
       _: "botCommandScopeDefault"
     },
     langCode: params?.langCode ?? ""
+  });
+}
+
+async function getPreparedKeyboardButton(client, botId, preparedId) {
+  return client.call({
+    _: "bots.getRequestedWebViewButton",
+    bot: await resolveUser(client, botId),
+    webappReqId: preparedId
   });
 }
 
@@ -78590,6 +80747,25 @@ class WebviewResult {
 }
 const WebviewResult$1 = /* @__PURE__ */ makeInspectable(WebviewResult, ["shouldBeClosed"]);
 
+function _normalizeWebviewTheme(theme) {
+  if (!theme) return void 0;
+  if ("_" in theme) return theme;
+  return {
+    _: "dataJSON",
+    data: JSON.stringify(theme)
+  };
+}
+
+async function openJoinChatWebview(client, params) {
+  const res = await client.call({
+    _: "messages.requestChatJoinWebView",
+    queryId: params.queryId,
+    themeParams: _normalizeWebviewTheme(params.theme),
+    platform: params.platform
+  });
+  return new WebviewResult$1(res);
+}
+
 const _getWebviewTimerId = (queryId) => `webview:${longToFastString(queryId)}`;
 async function openWebview(client, params) {
   const {
@@ -78600,17 +80776,7 @@ async function openWebview(client, params) {
     platform
   } = params;
   const botPeer = await resolveUser(client, bot);
-  let themeObj;
-  if (theme) {
-    if ("_" in theme) {
-      themeObj = theme;
-    } else {
-      themeObj = {
-        _: "dataJSON",
-        data: JSON.stringify(theme)
-      };
-    }
-  }
+  const themeObj = _normalizeWebviewTheme(theme);
   switch (webview.type) {
     case "main": {
       const chatPeer = chat != null ? await resolvePeer(client, chat) : { _: "inputPeerEmpty" };
@@ -78765,6 +80931,24 @@ async function prepareInlineMessage(client, params) {
     result: tlResult[0],
     peerTypes
   });
+}
+
+async function prepareKeyboardButton(client, userId, button) {
+  const res = await client.call({
+    _: "bots.requestWebViewButton",
+    userId: await resolveUser(client, userId),
+    button: _toReplyButton(button)
+  });
+  return res.webappReqId;
+}
+
+async function removeBotUsername(client, botId, username) {
+  const r = await client.call({
+    _: "bots.removeUsername",
+    bot: await resolveUser(client, botId),
+    username
+  });
+  assertTrue("bots.removeUsername", r);
 }
 
 async function setBotInfo(client, params) {
@@ -78952,6 +81136,18 @@ class ChatPermissions {
     return !this.raw.manageTopics;
   }
   /**
+   * Whether users can edit their own custom tag (rank)
+   */
+  get canEditRank() {
+    return !this.raw.editRank;
+  }
+  /**
+   * Whether users can change the chats linked to the community
+   */
+  get canManageLinkedPeers() {
+    return !this.raw.manageLinkedPeers;
+  }
+  /**
    * UNIX date until which these permissions are valid,
    * or `null` if forever.
    *
@@ -78980,7 +81176,7 @@ class Chat {
       case "communityForbidden":
         break;
       default:
-        throw new MtTypeAssertionError("peer", "user | chat | channel", peer._);
+        throw new MtTypeAssertionError("user | chat | channel", peer._);
     }
     this.raw = peer;
   }
@@ -79226,6 +81422,14 @@ class Chat {
   get linkedCommunityId() {
     if (this.raw._ !== "channel" || !this.raw.linkedCommunityId) return null;
     return toggleChannelIdMark(this.raw.linkedCommunityId);
+  }
+  /**
+   * ID of the last pinned message in this channel, if available
+   *
+   * **Note**: in some cases this field is only available in {@link FullChat}
+   */
+  get pinnedMsgId() {
+    return this.raw._ === "channel" ? this.raw.pinnedMsgId ?? null : null;
   }
   /** Whether this community is collapsed in the dialogs list */
   get isCollapsedInDialogs() {
@@ -79561,7 +81765,7 @@ class Thumbnail extends FileLocation$1 {
     switch (sz._) {
       case "photoSizeEmpty":
       case "photoCachedSize":
-        throw new MtTypeAssertionError("sz", "not (photoSizeEmpty | photoCachedSize)", sz._);
+        throw new MtTypeAssertionError("not (photoSizeEmpty | photoCachedSize)", sz._);
     }
     let location;
     let size;
@@ -79605,7 +81809,7 @@ class Thumbnail extends FileLocation$1 {
             thumbVersion: media.thumbVersion
           };
         } else if (media._ === "messageExtendedMediaPreview") {
-          throw new MtTypeAssertionError("messageExtendedMediaPreview#thumb", "photoStrippedSize", sz._);
+          throw new MtTypeAssertionError("photoStrippedSize", sz._);
         } else {
           location = {
             _: media._ === "photo" ? "inputPhotoFileLocation" : "inputDocumentFileLocation",
@@ -79663,7 +81867,7 @@ class Thumbnail extends FileLocation$1 {
    * @throws MtTypeAssertionError  In case {@link raw} is not `tl.RawPhotoPathSize`
    */
   get path() {
-    assertTypeIs("Thumbnail#path", this.raw, "photoPathSize");
+    assertTypeIs(this.raw, "photoPathSize");
     return this._path;
   }
   /**
@@ -80602,6 +82806,31 @@ class StarGiftUnique {
   get valueUsd() {
     return this.raw.valueUsdAmount ?? null;
   }
+  /** Estimated value of the gift, in the smallest units of the currency */
+  get value() {
+    if (!this.raw.valueAmount || !this.raw.valueCurrency) return null;
+    return { amount: this.raw.valueAmount, currency: this.raw.valueCurrency };
+  }
+  /** ID of the regular gift from which this gift was upgraded */
+  get regularGiftId() {
+    return this.raw.giftId;
+  }
+  /** Whether this gift can only be bought using TON */
+  get isResaleTonOnly() {
+    return this.raw.resaleTonOnly;
+  }
+  /** Whether a chat theme based on this gift is available */
+  get isThemeAvailable() {
+    return this.raw.themeAvailable;
+  }
+  /**
+   * Chat where the chat theme based on this gift is currently installed, if any and available
+   */
+  get themePeer() {
+    if (!this.raw.themePeer) return null;
+    if (!this._peers.has(this.raw.themePeer)) return null;
+    return parsePeer(this.raw.themePeer, this._peers);
+  }
   /** Minimum number of stars required to create a purchase offer for the gift */
   get offerMinStars() {
     return this.raw.offerMinStars ?? null;
@@ -80615,7 +82844,9 @@ const StarGiftUnique$2 = /* @__PURE__ */ memoizeGetters(StarGiftUnique$1, [
   "originalDetails",
   "resellPriceStars",
   "resellPriceTon",
-  "releasedBy"
+  "releasedBy",
+  "value",
+  "themePeer"
 ]);
 
 class StarGift {
@@ -80666,10 +82897,10 @@ class StarGift {
   }
   /** Sticker associated with the gift */
   get sticker() {
-    assertTypeIs("StarGift#sticker", this.raw.sticker, "document");
+    assertTypeIs(this.raw.sticker, "document");
     const parsed = parseDocument(this.raw.sticker);
     if (parsed.type !== "sticker") {
-      throw new MtTypeAssertionError("StarGift#sticker", "sticker", parsed.type);
+      throw new MtTypeAssertionError("sticker", parsed.type);
     }
     return parsed;
   }
@@ -80737,6 +82968,10 @@ class StarGift {
   /** Background color of the gift */
   get background() {
     return this.raw.background ?? null;
+  }
+  /** If set, this gift possibly cannot be sent until this date */
+  get lockedUntil() {
+    return this.raw.lockedUntilDate ? new Date(this.raw.lockedUntilDate * 1e3) : null;
   }
 }
 const StarGift$1 = /* @__PURE__ */ makeInspectable(StarGift);
@@ -80933,6 +83168,11 @@ function _messageActionFromTl(act) {
       return {
         type: "user_joined_approved"
       };
+    case "messageActionChatJoinedViaCommunity":
+      return {
+        type: "user_joined_community",
+        community: new Chat$2(this._peers.chat(act.communityId))
+      };
     case "messageActionWebViewDataSent":
       return {
         type: "webview_sent",
@@ -81056,7 +83296,8 @@ function _messageActionFromTl(act) {
         giftNum: act.giftNum,
         toId: act.toId ? parsePeer(act.toId, this._peers) : null,
         savedId: act.savedId,
-        prepaidUpgradeHash: act.prepaidUpgradeHash ?? void 0
+        prepaidUpgradeHash: act.prepaidUpgradeHash ?? void 0,
+        upgradeSeparate: act.upgradeSeparate
       };
     case "messageActionStarGiftUnique": {
       if (act.gift._ !== "starGiftUnique") return null;
@@ -81069,7 +83310,9 @@ function _messageActionFromTl(act) {
         canExportAt: act.canExportAt ? new Date(act.canExportAt * 1e3) : void 0,
         canCraftAt: act.canCraftAt ? new Date(act.canCraftAt * 1e3) : void 0,
         savedId: act.savedId,
-        dropDetailsStars: act.dropOriginalDetailsStars
+        dropDetailsStars: act.dropOriginalDetailsStars,
+        nameHidden: act.nameHidden,
+        message: act.message
       };
       if (act.assigned) {
         return {
@@ -81138,6 +83381,34 @@ function _messageActionFromTl(act) {
         cryptoAmount: act.cryptoAmount,
         transactionId: act.transactionId
       };
+    case "messageActionSuggestedPostApproval":
+      if (act.rejected) {
+        return {
+          type: "suggested_post_declined",
+          comment: act.rejectComment
+        };
+      }
+      if (act.balanceTooLow) {
+        return {
+          type: "suggested_post_approval_failed",
+          price: act.price
+        };
+      }
+      return {
+        type: "suggested_post_approved",
+        price: act.price,
+        scheduleDate: act.scheduleDate ? new Date(act.scheduleDate * 1e3) : void 0
+      };
+    case "messageActionSuggestedPostSuccess":
+      return {
+        type: "suggested_post_paid",
+        price: act.price
+      };
+    case "messageActionSuggestedPostRefund":
+      return {
+        type: "suggested_post_refunded",
+        reason: act.payerInitiated ? "payment_refunded" : "post_deleted"
+      };
     case "messageActionSuggestBirthday":
       return {
         type: "suggest_birthday",
@@ -81184,13 +83455,13 @@ function _messageActionFromTl(act) {
         newValue: act.newValue
       };
     case "messageActionPollAppendAnswer":
-      assertTypeIsNot("messageActionPollAppendAnswer", act.answer, "inputPollAnswer");
+      assertTypeIsNot(act.answer, "inputPollAnswer");
       return {
         type: "poll_append_answer",
         answer: act.answer
       };
     case "messageActionPollDeleteAnswer":
-      assertTypeIsNot("messageActionPollAppendAnswer", act.answer, "inputPollAnswer");
+      assertTypeIsNot(act.answer, "inputPollAnswer");
       return {
         type: "poll_delete_answer",
         answer: act.answer
@@ -81204,6 +83475,30 @@ function _messageActionFromTl(act) {
       return {
         type: "change_community",
         community: act.communityId ? new Chat$2(this._peers.chat(act.communityId)) : null
+      };
+    case "messageActionGramTransfer":
+      return {
+        type: "gram_transfer",
+        amount: act.amount,
+        peerAddress: act.peerAddress,
+        transactionId: act.transactionId,
+        comment: act.comment,
+        commentEncrypted: act.commentEncrypted
+      };
+    case "messageActionWalletTonConnectRequest":
+      return {
+        type: "wallet_ton_connect_request",
+        accepted: act.accepted,
+        declined: act.declined,
+        sessionId: act.sessionId,
+        expires: new Date(act.expires * 1e3),
+        topic: act.topic,
+        traceId: act.traceId,
+        dappName: act.dappName
+      };
+    case "messageActionNoPaidMessagesTokenUsed":
+      return {
+        type: "no_paid_messages_token_used"
       };
     default:
       return null;
@@ -81235,7 +83530,7 @@ class MessageForwardInfo {
     if (this.raw.fromId) {
       return parsePeer(this.raw.fromId, this._peers);
     }
-    throw new MtTypeAssertionError("MessageForwardInfo", "to have fromId or fromName", "neither");
+    throw new MtcuteError("Forward info has neither fromId nor fromName");
   }
   /**
    * For "saved" messages (i.e. messages forwarded to yourself,
@@ -81457,6 +83752,18 @@ class Dice {
     return this.obj.value;
   }
   /**
+   * For stake dice, outcome of the game
+   */
+  get gameOutcome() {
+    const outcome = this.obj.gameOutcome;
+    if (!outcome) return null;
+    return {
+      seed: outcome.seed,
+      stakeTonAmount: outcome.stakeTonAmount,
+      tonAmount: outcome.tonAmount
+    };
+  }
+  /**
    * Input media TL object generated from this object,
    * to be used inside {@link InputMediaLike} and
    * {@link TelegramClient.sendMedia}
@@ -81471,7 +83778,8 @@ class Dice {
     };
   }
 }
-const Dice$1 = /* @__PURE__ */ makeInspectable(Dice, void 0, ["inputMedia"]);
+const Dice$1 = /* @__PURE__ */ memoizeGetters(Dice, ["gameOutcome"]);
+const Dice$2 = /* @__PURE__ */ makeInspectable(Dice$1, void 0, ["inputMedia"]);
 
 class Game {
   constructor(game) {
@@ -81894,8 +84202,9 @@ const PaidMedia$1 = /* @__PURE__ */ makeInspectable(PaidMedia, void 0, ["inputMe
 const PaidMedia$2 = /* @__PURE__ */ memoizeGetters(PaidMedia$1, ["previews", "inputMedia"]);
 
 class PollAnswer {
-  constructor(raw, result) {
+  constructor(raw, _peers, result) {
     this.raw = raw;
+    this._peers = _peers;
     this.result = result;
   }
   /**
@@ -81941,9 +84250,21 @@ class PollAnswer {
   get correct() {
     return Boolean(this.result?.correct);
   }
+  /** Some of the peers who have chosen this answer, if available */
+  get recentVoters() {
+    return this.result?.recentVoters?.map((peer) => parsePeer(peer, this._peers)) ?? [];
+  }
   /** Media attached to this answer, if any */
   get media() {
-    return this.raw.media ? _messageMediaFromTl(null, this.raw.media) : null;
+    return this.raw.media ? _messageMediaFromTl(this._peers, this.raw.media) : null;
+  }
+  /** If this answer was suggested by a participant, the peer who added it */
+  get addedBy() {
+    return this.raw.addedBy ? parsePeer(this.raw.addedBy, this._peers) : null;
+  }
+  /** If this answer was suggested by a participant, the date when it was added */
+  get date() {
+    return this.raw.date ? new Date(this.raw.date * 1e3) : null;
   }
 }
 class Poll {
@@ -81973,16 +84294,20 @@ class Poll {
     return this.raw.question.entities.map((ent) => new MessageEntity$2(ent, this.raw.question.text));
   }
   /**
+   * Hash of the poll, can be passed to {@link TelegramClient.getPollResults}
+   * to avoid re-fetching the poll itself if it didn't change
+   */
+  get hash() {
+    return this.raw.hash;
+  }
+  /**
    * List of answers in this poll
    */
   get answers() {
     const results = this.results?.results;
-    return this.raw.answers.map((ans, idx) => {
-      assertTypeIs("Poll.answers", ans, "pollAnswer");
-      if (results) {
-        return new PollAnswer(ans, results[idx]);
-      }
-      return new PollAnswer(ans);
+    return this.raw.answers.map((ans) => {
+      assertTypeIs(ans, "pollAnswer");
+      return new PollAnswer(ans, this._peers, results?.find((it) => equal(it.option, ans.option)));
     });
   }
   /**
@@ -81990,6 +84315,10 @@ class Poll {
    */
   get voters() {
     return this.results?.totalVoters ?? 0;
+  }
+  /** Some of the peers who have voted in this poll, if available */
+  get recentVoters() {
+    return this.results?.recentVoters?.map((peer) => parsePeer(peer, this._peers)) ?? [];
   }
   /**
    * Whether this poll is closed, i.e. does not
@@ -82023,7 +84352,7 @@ class Poll {
   }
   /** Whether new options can be suggested to this poll */
   get canAddAnswers() {
-    return !this.raw.closed && !this.raw.openAnswers;
+    return !this.raw.closed && Boolean(this.raw.openAnswers);
   }
   /** Whether retracting the vote is disabled in this poll */
   get isRevotingDisabled() {
@@ -82038,7 +84367,7 @@ class Poll {
     return this.raw.hideResultsUntilClose;
   }
   /** Whether the poll has unread votes */
-  get hasUnreaVotes() {
+  get hasUnreadVotes() {
     return this.results?.hasUnreadVotes ?? false;
   }
   /** Whether voting in this poll is restricted to channel subscribers */
@@ -82076,7 +84405,7 @@ class Poll {
   }
   /** Media attached to the solution, if any */
   get solutionMedia() {
-    return this.results?.solutionMedia ? _messageMediaFromTl(null, this.results.solutionMedia) : null;
+    return this.results?.solutionMedia ? _messageMediaFromTl(this._peers, this.results.solutionMedia) : null;
   }
   /**
    * Input media TL object generated from this object,
@@ -82097,7 +84426,6 @@ class Poll {
     return {
       _: "inputMediaPoll",
       attachedMedia: this.attachedMedia?.inputMedia,
-      solutionMedia: this.solutionMedia?.inputMedia,
       poll: {
         _: "poll",
         closed: false,
@@ -82105,7 +84433,11 @@ class Poll {
         publicVoters: this.raw.publicVoters,
         multipleChoice: this.raw.multipleChoice,
         question: this.raw.question,
-        answers: this.raw.answers,
+        answers: this.answers.map((ans) => ({
+          _: "inputPollAnswer",
+          text: ans.raw.text,
+          media: ans.media?.inputMedia
+        })),
         closePeriod: this.raw.closePeriod,
         closeDate: this.raw.closeDate,
         openAnswers: this.raw.openAnswers,
@@ -82119,7 +84451,7 @@ class Poll {
     };
   }
 }
-const Poll$1 = /* @__PURE__ */ memoizeGetters(Poll, ["answers", "solutionEntities", "questionEntities", "solutionMedia"]);
+const Poll$1 = /* @__PURE__ */ memoizeGetters(Poll, ["answers", "solutionEntities", "questionEntities", "solutionMedia", "recentVoters"]);
 const Poll$2 = /* @__PURE__ */ makeInspectable(Poll$1, ["attachedMedia"], ["inputMedia"]);
 
 class StoryInteractiveArea {
@@ -82178,7 +84510,7 @@ class StoryInteractiveLocation extends StoryInteractiveArea {
    * Geolocation
    */
   get location() {
-    assertTypeIs("StoryInteractiveLocation#location", this.raw.geo, "geoPoint");
+    assertTypeIs(this.raw.geo, "geoPoint");
     return new Location$1(this.raw.geo);
   }
 }
@@ -82218,7 +84550,7 @@ function toReactionEmoji(reaction, allowEmpty) {
       return "⭐";
     case "reactionEmpty":
       if (!allowEmpty) {
-        throw new MtTypeAssertionError("toReactionEmoji", "not reactionEmpty", reaction._);
+        throw new MtTypeAssertionError("not reactionEmpty", reaction._);
       }
       return null;
   }
@@ -82279,7 +84611,7 @@ class StoryInteractiveVenue extends StoryInteractiveArea {
    * Geolocation of the venue
    */
   get location() {
-    assertTypeIs("StoryInteractiveVenue#location", this.raw.geo, "geoPoint");
+    assertTypeIs(this.raw.geo, "geoPoint");
     return new Location$1(this.raw.geo);
   }
   /**
@@ -82347,7 +84679,7 @@ function _storyInteractiveElementFromTl(raw, peers) {
       return new StoryInteractiveStarGift$1(raw);
     case "inputMediaAreaVenue":
     case "inputMediaAreaChannelPost":
-      throw new MtTypeAssertionError("StoryInteractiveElement", "!input*", raw._);
+      throw new MtTypeAssertionError("not inputMediaArea*", raw._);
   }
 }
 
@@ -82553,8 +84885,17 @@ class Story {
   get albums() {
     return this.raw.albums ?? [];
   }
+  /**
+   * Music attached to this story, if any
+   */
+  get music() {
+    if (this.raw.music?._ !== "document") return null;
+    const doc = parseDocument(this.raw.music);
+    if (doc.type !== "audio") return null;
+    return doc;
+  }
 }
-const Story$1 = /* @__PURE__ */ memoizeGetters(Story, ["entities", "media", "interactiveElements", "interactions"]);
+const Story$1 = /* @__PURE__ */ memoizeGetters(Story, ["entities", "media", "interactiveElements", "interactions", "music"]);
 const Story$2 = /* @__PURE__ */ makeInspectable(Story$1);
 
 class MediaStory {
@@ -82669,7 +85010,7 @@ class Venue {
    * Geolocation of the venue
    */
   get location() {
-    assertTypeIs("Venue#location", this.raw.geo, "geoPoint");
+    assertTypeIs(this.raw.geo, "geoPoint");
     return new Location$1(this.raw.geo);
   }
   /**
@@ -82947,7 +85288,7 @@ function _messageMediaFromTl(peers, m) {
       if (!(m.photo?._ === "photo")) return null;
       return new Photo$2(m.photo, m);
     case "messageMediaDice":
-      return new Dice$1(m);
+      return new Dice$2(m);
     case "messageMediaContact":
       return new Contact$1(m);
     case "messageMediaDocument":
@@ -82968,7 +85309,7 @@ function _messageMediaFromTl(peers, m) {
       return new Venue$2(m);
     case "messageMediaPoll":
       if (!peers) {
-        throw new MtTypeAssertionError("can't create poll without peers index", "PeersIndex", "null");
+        throw new MtcuteError("Can't create poll without peers index");
       }
       return new Poll$2(
         m.poll,
@@ -82982,7 +85323,7 @@ function _messageMediaFromTl(peers, m) {
     }
     case "messageMediaStory": {
       if (!peers) {
-        throw new MtTypeAssertionError("can't create story without peers index", "PeersIndex", "null");
+        throw new MtcuteError("Can't create story without peers index");
       }
       return new MediaStory$1(m, peers);
     }
@@ -82996,7 +85337,7 @@ function _messageMediaFromTl(peers, m) {
     }
     case "messageMediaToDo":
       if (!peers) {
-        throw new MtTypeAssertionError("can't create todo without peers index", "PeersIndex", "null");
+        throw new MtcuteError("Can't create todo without peers index");
       }
       return new TodoList$2(m, peers);
     default:
@@ -83281,6 +85622,10 @@ class RepliedMessageInfo {
   get quoteEntities() {
     return this.raw.quoteEntities?.map((e) => new MessageEntity$2(e)) ?? [];
   }
+  /** If this message is a quote of a rich message, rich text of the quote */
+  get quoteRich() {
+    return this.raw.quoteRich ?? null;
+  }
   /**
    * Offset of the start of the {@link quoteText} in the replied-to message.
    *
@@ -83370,7 +85715,7 @@ class Message {
   constructor(raw, _peers, isScheduled = false) {
     this._peers = _peers;
     this.isScheduled = isScheduled;
-    assertTypeIsNot("Message#ctor", raw, "messageEmpty");
+    assertTypeIsNot(raw, "messageEmpty");
     this.raw = raw;
   }
   /**
@@ -83634,6 +85979,33 @@ class Message {
     return parsePeer(this.raw.guestchatViaFrom, this._peers);
   }
   /**
+   * For messages in a saved messages dialog, marked ID of the peer the dialog belongs to.
+   *
+   * For messages in a monoforum (channel direct messages), marked ID of the peer
+   * the monoforum topic belongs to
+   */
+  get savedPeerId() {
+    return this.raw.savedPeerId ? getMarkedPeerId(this.raw.savedPeerId) : null;
+  }
+  /**
+   * Peer identified by {@link savedPeerId}, if available
+   *
+   * > Note: in some cases, only {@link savedPeerId} is available, and not this field,
+   * > in which cases please use `tg.getPeer(savedPeerId)` manually
+   */
+  get savedPeer() {
+    if (!this.raw.savedPeerId) return null;
+    if (!this._peers.has(this.raw.savedPeerId)) return null;
+    return parsePeer(this.raw.savedPeerId, this._peers);
+  }
+  /**
+   * If set, the client should offer to summarize this message.
+   * Contains the language code of the original message
+   */
+  get summaryFromLanguage() {
+    return this.raw._ === "message" ? this.raw.summaryFromLanguage ?? null : null;
+  }
+  /**
    * Message text or media caption.
    *
    * Empty string for service messages
@@ -83721,7 +86093,8 @@ class Message {
         return {
           type: "force_reply",
           singleUse: rm.singleUse,
-          selective: rm.selective
+          selective: rm.selective,
+          placeholder: rm.placeholder
         };
       case "replyKeyboardMarkup":
         return {
@@ -83729,12 +86102,16 @@ class Message {
           resize: rm.resize,
           singleUse: rm.singleUse,
           selective: rm.selective,
+          persistent: rm.persistent,
+          forceReply: rm.forceReply,
+          placeholder: rm.placeholder,
           buttons: _rowsTo2d(rm.rows)
         };
       case "replyInlineMarkup":
         return {
           type: "inline",
-          buttons: _rowsTo2d(rm.rows)
+          forceReply: rm.forceReply,
+          buttons: _inlineRowsTo2d(rm.rows)
         };
       default:
         assertNever$1();
@@ -83834,12 +86211,13 @@ const Message$1 = /* @__PURE__ */ memoizeGetters(Message, [
   "reactions",
   "factCheck",
   "suggestedPost",
-  "guestChatViaFrom"
+  "guestChatViaFrom",
+  "savedPeer"
 ]);
 const Message$2 = /* @__PURE__ */ makeInspectable(Message$1, ["isScheduled"], ["link"]);
 
 function _findMessageInUpdate(client, res, isEdit = false, noDispatch = true, allowNull = false, randomId) {
-  assertIsUpdatesGroup("_findMessageInUpdate", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, noDispatch);
   let ourMessageId = 0;
   for (const u of res.updates) {
@@ -83848,7 +86226,7 @@ function _findMessageInUpdate(client, res, isEdit = false, noDispatch = true, al
       continue;
     }
     if (isEdit) {
-      if (!(u._ === "updateEditMessage" || u._ === "updateEditChannelMessage" || u._ === "updateBotEditBusinessMessage" || u._ === "updateBotNewBusinessMessage")) {
+      if (!(u._ === "updateEditMessage" || u._ === "updateEditChannelMessage" || u._ === "updateNewScheduledMessage" || u._ === "updateBotEditBusinessMessage" || u._ === "updateBotNewBusinessMessage")) {
         continue;
       }
     } else {
@@ -83861,11 +86239,7 @@ function _findMessageInUpdate(client, res, isEdit = false, noDispatch = true, al
     return new Message$2(u.message, peers, u._ === "updateNewScheduledMessage");
   }
   if (allowNull) return null;
-  throw new MtTypeAssertionError(
-    "_findInUpdate (@ .updates[*])",
-    "updateNewMessage | updateNewChannelMessage | updateNewScheduledMessage",
-    "none"
-  );
+  throw new MtcuteError("Response does not contain updateNewMessage | updateNewChannelMessage | updateNewScheduledMessage");
 }
 
 async function setGameScore(client, params) {
@@ -83900,6 +86274,16 @@ async function setInlineGameScore(client, params) {
     { dcId: id.dcId }
   );
   assertTrue("messages.setInlineGameScore", r);
+}
+
+async function setManagedBotAccessSettings(client, botId, params) {
+  const r = await client.call({
+    _: "bots.editAccessSettings",
+    restricted: params.restricted,
+    bot: await resolveUser(client, botId),
+    addUsers: params.users?.length ? await resolvePeerMany(client, params.users, toInputUser) : void 0
+  });
+  assertTrue("bots.editAccessSettings", r);
 }
 
 async function setMyCommands(client, params) {
@@ -84029,7 +86413,7 @@ async function createChannel(client, params) {
     about: description,
     broadcast: true
   });
-  assertIsUpdatesGroup("channels.createChannel", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   return new Chat$2(res.chats[0]);
 }
@@ -84044,7 +86428,7 @@ async function createGroup(client, params) {
     title,
     users: peers
   });
-  assertIsUpdatesGroup("messages.createChat", updates);
+  assertIsUpdatesGroup(updates);
   client.handleClientUpdate(updates);
   return {
     chat: new Chat$2(updates.chats[0]),
@@ -84062,7 +86446,7 @@ async function createSupergroup(client, params) {
     forum,
     ttlPeriod
   });
-  assertIsUpdatesGroup("channels.createChannel", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   return new Chat$2(res.chats[0]);
 }
@@ -84257,16 +86641,22 @@ function normalizeChatEventFilters(input) {
           serverFilter.forums = true;
           break;
         case "sub_extend":
+          serverFilter.subExtend = true;
+          break;
+        case "participant_rank_edited":
+          serverFilter.editRank = true;
+          break;
+        case "msg_sent":
+          serverFilter.send = true;
+          break;
         case "available_reactions_changed":
         case "emoji_status_changed":
         case "emoji_stickerset_changed":
-        case "msg_sent":
         case "peer_color_changed":
         case "profile_peer_color_changed":
         case "wallpaper_changed":
         case "toggle_anti_spam":
         case "toggle_autotranslation":
-        case "participant_rank_edited":
           serverFilter.invite = true;
           serverFilter.invites = true;
           serverFilter.join = true;
@@ -84293,7 +86683,7 @@ function normalizeChatEventFilters(input) {
 class ChatInviteLink {
   constructor(raw, _peers) {
     this._peers = _peers;
-    assertTypeIsNot("ChatInviteLink", raw, "chatInvitePublicJoinRequests");
+    assertTypeIsNot(raw, "chatInvitePublicJoinRequests");
     this.raw = raw;
   }
   raw;
@@ -84399,7 +86789,7 @@ class ChatMember {
     switch (this.raw._) {
       case "channelParticipantBanned":
       case "channelParticipantLeft":
-        assertTypeIs("ChatMember#user (raw.peer)", this.raw.peer, "peerUser");
+        assertTypeIs(this.raw.peer, "peerUser");
         return new User$2(this._peers.user(this.raw.peer.userId));
       default:
         return new User$2(this._peers.user(this.raw.userId));
@@ -84577,8 +86967,13 @@ class DraftMessage {
     }
     return entities;
   }
+  /** If this is a draft of a suggested post, information about it */
+  get suggestedPost() {
+    if (!this.raw.suggestedPost) return null;
+    return new SuggestedPostInfo$1(this.raw.suggestedPost);
+  }
 }
-const DraftMessage$1 = /* @__PURE__ */ memoizeGetters(DraftMessage, ["entities"]);
+const DraftMessage$1 = /* @__PURE__ */ memoizeGetters(DraftMessage, ["entities", "suggestedPost"]);
 const DraftMessage$2 = /* @__PURE__ */ makeInspectable(DraftMessage$1);
 
 class ForumTopic {
@@ -84923,21 +87318,21 @@ function _actionFromTl(e, peers, peerId) {
         enabled: e.newValue
       };
     case "channelAdminLogEventActionCreateTopic":
-      assertTypeIs("ChannelAdminLogEventActionCreateTopic#topic", e.topic, "forumTopic");
+      assertTypeIs(e.topic, "forumTopic");
       return {
         type: "topic_created",
         topic: new ForumTopic$2(e.topic, peers)
       };
     case "channelAdminLogEventActionEditTopic":
-      assertTypeIs("ChannelAdminLogEventActionCreateTopic#topic", e.prevTopic, "forumTopic");
-      assertTypeIs("ChannelAdminLogEventActionCreateTopic#topic", e.newTopic, "forumTopic");
+      assertTypeIs(e.prevTopic, "forumTopic");
+      assertTypeIs(e.newTopic, "forumTopic");
       return {
         type: "topic_edited",
         old: new ForumTopic$2(e.prevTopic, peers),
         new: new ForumTopic$2(e.newTopic, peers)
       };
     case "channelAdminLogEventActionDeleteTopic":
-      assertTypeIs("ChannelAdminLogEventActionCreateTopic#topic", e.topic, "forumTopic");
+      assertTypeIs(e.topic, "forumTopic");
       return {
         type: "topic_deleted",
         topic: new ForumTopic$2(e.topic, peers)
@@ -85094,7 +87489,7 @@ async function getChatMember(client, params) {
       _: "messages.getFullChat",
       chatId: chat.chatId
     });
-    assertTypeIs("getChatMember (@ messages.getFullChat)", res.fullChat, "chatFull");
+    assertTypeIs(res.fullChat, "chatFull");
     const members = res.fullChat.participants._ === "chatParticipantsForbidden" ? [] : res.fullChat.participants.participants;
     const peers = PeersIndex.from(res);
     for (const m of members) {
@@ -85131,7 +87526,7 @@ async function getChatMembers(client, chatId, params) {
       _: "messages.getFullChat",
       chatId: chat.chatId
     });
-    assertTypeIs("getChatMember (@ messages.getFullChat)", res.fullChat, "chatFull");
+    assertTypeIs(res.fullChat, "chatFull");
     let members = res.fullChat.participants._ === "chatParticipantsForbidden" ? [] : res.fullChat.participants.participants;
     if (offset) members = members.slice(offset);
     if (limit) members = members.slice(0, limit);
@@ -85178,7 +87573,7 @@ async function getChatMembers(client, chatId, params) {
       limit,
       hash: Long.ZERO
     });
-    assertTypeIs("getChatMembers (@ channels.getParticipants)", res, "channels.channelParticipants");
+    assertTypeIs(res, "channels.channelParticipants");
     const peers = PeersIndex.from(res);
     const ret = res.participants.map((i) => new ChatMember$2(i, peers));
     return makeArrayWithTotal(ret, res.count);
@@ -85371,11 +87766,11 @@ function normalizeInputStickerSet(input) {
       return { _: "inputStickerSetEmojiChannelDefaultStatuses" };
   }
 }
-function parseStickerOrThrow(doc) {
-  assertTypeIs("parseStickerOrThrow", doc, "document");
+function parseStickerOrNull(doc) {
+  assertTypeIs(doc, "document");
   const sticker = parseSticker(doc);
   if (!sticker) {
-    throw new MtTypeAssertionError("full.documents", "sticker", "not a sticker");
+    return null;
   }
   return sticker;
 }
@@ -85397,7 +87792,7 @@ class StickerSet {
       this.cover = raw;
       this.brief = raw.set;
     } else {
-      throw new MtTypeAssertionError("StickerSet", "messages.stickerSet | stickerSet", raw._);
+      throw new MtTypeAssertionError("messages.stickerSet | stickerSet", raw._);
     }
     this.isFull = raw._ === "messages.stickerSet";
   }
@@ -85478,7 +87873,8 @@ class StickerSet {
     const stickers = [];
     const index = new LongMap();
     this.full.documents.forEach((doc) => {
-      const sticker = parseStickerOrThrow(doc);
+      const sticker = parseStickerOrNull(doc);
+      if (!sticker) return;
       const info = {
         alt: sticker.emoji,
         emoji: "",
@@ -85503,11 +87899,11 @@ class StickerSet {
     if (!this.cover) return [];
     switch (this.cover._) {
       case "stickerSetCovered":
-        return [parseStickerOrThrow(this.cover.cover)];
+        return [asNonNull(parseStickerOrNull(this.cover.cover))];
       case "stickerSetMultiCovered":
-        return this.cover.covers.map((it) => parseStickerOrThrow(it));
+        return this.cover.covers.map((it) => parseStickerOrNull(it)).filter(isNotNull);
       case "stickerSetFullCovered":
-        return this.cover.documents.map((it) => parseStickerOrThrow(it));
+        return this.cover.documents.map((it) => parseStickerOrNull(it)).filter(isNotNull);
       case "stickerSetNoCovered":
         return [];
     }
@@ -85910,7 +88306,7 @@ class FullChat extends Chat$2 {
   }
   /** ID of the last pinned message in the chat */
   get pinnedMsgId() {
-    return this.full._ === "channelFull" ? this.full.pinnedMsgId ?? null : null;
+    return this.full._ === "communityFull" ? null : this.full.pinnedMsgId ?? null;
   }
   /**
    * Information about a linked chat:
@@ -85978,6 +88374,10 @@ class FullChat extends Chat$2 {
     if (this.full._ !== "channelFull" || !this.full.botVerification) return null;
     return new BotVerification$1(this.full.botVerification);
   }
+  /** Whether this chat has welcome messages configured */
+  get hasWelcomeMessages() {
+    return this.full._ !== "communityFull" && this.full.hasWelcomeMessages;
+  }
   /** Whether star gifts are available in this chat */
   get starGiftsAvailable() {
     return this.full._ === "channelFull" && this.full.stargiftsAvailable;
@@ -85989,6 +88389,21 @@ class FullChat extends Chat$2 {
   /** Whether you can enable paid messages in this chat */
   get paidMessagesAvailable() {
     return this.full._ === "channelFull" && this.full.paidMessagesAvailable;
+  }
+  /**
+   * Number of stars that the current user must pay for each message sent to this chat,
+   * or `null` if messages are free
+   */
+  get outgoingPaidMessagePrice() {
+    return this.full._ === "channelFull" ? this.full.sendPaidMessagesStars ?? null : null;
+  }
+  /** Main tab of the channel's profile, if set */
+  get mainTab() {
+    return this.full._ === "channelFull" ? this.full.mainTab ?? null : null;
+  }
+  /** Theme of the screen for sharing a link to this chat, if set */
+  get shareTheme() {
+    return this.full._ === "channelFull" ? this.full.shareTheme ?? null : null;
   }
   /** For communities, list of peers linked to it */
   get linkedPeers() {
@@ -86240,6 +88655,18 @@ class BusinessAccount {
 }
 const BusinessAccount$1 = /* @__PURE__ */ memoizeGetters(BusinessAccount, ["intro", "workHours", "location"]);
 const BusinessAccount$2 = /* @__PURE__ */ makeInspectable(BusinessAccount$1);
+
+function _chatThemeFromTl(theme, peers) {
+  if (theme._ === "chatTheme") {
+    return { type: "emoji", emoji: theme.emoticon };
+  }
+  if (theme.gift._ !== "starGiftUnique") return null;
+  return {
+    type: "gift",
+    gift: new StarGiftUnique$2(theme.gift, peers),
+    settings: theme.themeSettings
+  };
+}
 
 class FullUser extends User$2 {
   peers;
@@ -86495,6 +88922,30 @@ class FullUser extends User$2 {
     if (doc.type !== "audio") return null;
     return doc;
   }
+  /** Theme of the chat with this user, if set */
+  get theme() {
+    if (!this.full.theme) return null;
+    return _chatThemeFromTl(this.full.theme, this.peers);
+  }
+  /**
+   * Number of stars that the current user must pay for each message sent to this user,
+   * or `null` if messages are free
+   */
+  get outgoingPaidMessagePrice() {
+    return this.full.sendPaidMessagesStars ?? null;
+  }
+  /** Main tab of the user's profile, if set */
+  get mainTab() {
+    return this.full.mainTab ?? null;
+  }
+  /** Theme of the screen for sharing a link to this user, if set */
+  get shareTheme() {
+    return this.full.shareTheme ?? null;
+  }
+  /** User's wallet card, if set */
+  get walletCard() {
+    return this.full.walletCard ?? null;
+  }
 }
 const FullUser$1 = /* @__PURE__ */ memoizeGetters(FullUser, [
   "fullPhoto",
@@ -86505,7 +88956,8 @@ const FullUser$1 = /* @__PURE__ */ memoizeGetters(FullUser, [
   "business",
   "botVerification",
   "starsRatingPending",
-  "lastSavedMusic"
+  "lastSavedMusic",
+  "theme"
 ]);
 const FullUser$2 = /* @__PURE__ */ makeInspectable(FullUser$1);
 
@@ -86654,7 +89106,7 @@ async function joinChat(client, chatId) {
   }
   switch (res._) {
     case "messages.chatInviteJoinResultOk":
-      assertIsUpdatesGroup("joinChat", res.updates);
+      assertIsUpdatesGroup(res.updates);
       client.handleClientUpdate(res.updates);
       return { status: "ok", chat: new Chat$2(res.updates.chats[0]) };
     case "messages.chatInviteJoinResultWebView": {
@@ -86724,13 +89176,16 @@ async function leaveChat(client, chatId, params) {
   }
 }
 
-async function markChatUnread(client, chatId) {
+async function markChatUnread(client, chatId, params) {
+  const peer = await resolvePeer(client, chatId);
+  const topicPeer = params?.topicPeer ? await resolvePeer(client, params.topicPeer) : void 0;
   const r = await client.call({
     _: "messages.markDialogUnread",
     peer: {
       _: "inputDialogPeer",
-      peer: await resolvePeer(client, chatId)
+      peer: topicPeer ?? peer
     },
+    parentPeer: topicPeer ? peer : void 0,
     unread: true
   });
   assertTrue("messages.markDialogUnread", r);
@@ -86750,7 +89205,7 @@ class Dialog {
    * @param limit  Maximum number of dialogs to parse
    */
   static parseTlDialogs(dialogs, limit) {
-    assertTypeIsNot("parseDialogs", dialogs, "messages.dialogsNotModified");
+    assertTypeIsNot(dialogs, "messages.dialogsNotModified");
     const peers = PeersIndex.from(dialogs);
     const messages = /* @__PURE__ */ new Map();
     dialogs.messages.forEach((msg) => {
@@ -86858,10 +89313,17 @@ class Dialog {
   /**
    * Whether this dialog is muted.
    *
+   * Accounts for both the `silent` flag and the `muteUntil` timestamp
+   * (a peer muted until a future date is considered muted).
+   *
    * If `null`, the default account-level setting should be used.
    */
   get isMuted() {
-    return this.raw.notifySettings.silent ?? null;
+    const { silent, muteUntil } = this.raw.notifySettings;
+    if (muteUntil !== void 0) {
+      return muteUntil > Date.now() / 1e3;
+    }
+    return silent ?? null;
   }
   /**
    * Whether this dialog is archived
@@ -87063,13 +89525,33 @@ async function restrictChatMember(client, params) {
   client.handleClientUpdate(res);
 }
 
+function _normalizeStarsAmount(amount) {
+  if (typeof amount === "number") {
+    return { _: "starsAmount", amount: Long.fromNumber(amount), nanos: 0 };
+  } else if (Long.isLong(amount)) {
+    return { _: "starsAmount", amount, nanos: 0 };
+  } else {
+    return amount;
+  }
+}
+
+function _normalizeInputSuggestedPost(post) {
+  if (!post) return void 0;
+  return {
+    _: "suggestedPost",
+    price: post.price !== void 0 ? _normalizeStarsAmount(post.price) : void 0,
+    scheduleDate: normalizeDate(post.scheduleDate)
+  };
+}
+
 async function saveDraft(client, chatId, draft) {
   const peer = await resolvePeer(client, chatId);
   if (draft) {
     await client.call({
       _: "messages.saveDraft",
       peer,
-      ...draft
+      ...draft,
+      suggestedPost: _normalizeInputSuggestedPost(draft.suggestedPost)
     });
   } else {
     await client.call({
@@ -87095,7 +89577,7 @@ async function setChatColor(client, params) {
   }
   if (isInputPeerUser(peer)) {
     if (!isSelfPeer(client, peer)) {
-      throw new MtTypeAssertionError("setChatColor", "self", peer._);
+      throw new MtInvalidPeerTypeError(peer, "channel | self");
     }
     const r = await client.call({
       _: "account.updateColor",
@@ -87107,6 +89589,7 @@ async function setChatColor(client, params) {
       forProfile
     });
     assertTrue("account.updateColor", r);
+    return;
   }
   throw new MtInvalidPeerTypeError(peer, "channel | user");
 }
@@ -87122,7 +89605,7 @@ async function setChatDefaultPermissions(client, chatId, restrictions) {
       ...restrictions
     }
   });
-  assertIsUpdatesGroup("messages.editChatDefaultBannedRights", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   return new Chat$2(res.chats[0]);
 }
@@ -87292,11 +89775,13 @@ async function toggleFragmentUsername(client, params) {
   }
 }
 
-async function toggleJoinRequests(client, chatId, enabled = false) {
+async function toggleJoinRequests(client, chatId, enabled = false, params) {
   const res = await client.call({
     _: "channels.toggleJoinRequest",
     channel: await resolveChannel(client, chatId),
-    enabled
+    enabled,
+    guardBot: params?.guardBot ? await resolveUser(client, params.guardBot) : void 0,
+    applyToInvites: params?.applyToInviteLinks
   });
   client.handleClientUpdate(res);
 }
@@ -87373,11 +89858,11 @@ async function createCommunity(client, params) {
     hidden,
     peer: await resolvePeer(client, chatId)
   });
-  assertIsUpdatesGroup("communities.create", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, !shouldDispatch);
   const community = res.chats.find((it) => it._ === "community");
   if (!community) {
-    throw new MtTypeAssertionError("communities.create (@ .chats)", "community", "none");
+    throw new MtcuteError("Response does not contain community");
   }
   return new Chat$2(community);
 }
@@ -87489,7 +89974,7 @@ async function addContact(client, params) {
     addPhonePrivacyException: sharePhone,
     note: note ? inputTextToTl(note) : void 0
   });
-  assertIsUpdatesGroup("contacts.addContact", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   return new User$2(res.users[0]);
 }
@@ -87504,9 +89989,22 @@ async function deleteContacts(client, userIds) {
     _: "contacts.deleteContacts",
     id: inputPeers
   });
-  assertIsUpdatesGroup("contacts.deleteContacts", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   return res.users.map((user) => new User$2(user));
+}
+
+async function exportNoPaidMessagesToken(client, params) {
+  const res = await client.call({
+    _: "contacts.exportNoPaidMessagesToken",
+    revoke: params?.revoke,
+    temporary: params?.temporary
+  });
+  return {
+    token: res.token,
+    url: res.url,
+    expires: res.expires ? new Date(res.expires * 1e3) : null
+  };
 }
 
 async function getContacts(client) {
@@ -87514,7 +90012,7 @@ async function getContacts(client) {
     _: "contacts.getContacts",
     hash: Long.ZERO
   });
-  assertTypeIs("getContacts", res, "contacts.contacts");
+  assertTypeIs(res, "contacts.contacts");
   return res.users.map((user) => new User$2(user));
 }
 
@@ -87529,6 +90027,16 @@ async function importContacts(client, contacts) {
     _: "contacts.importContacts",
     contacts: contactsNorm
   });
+}
+
+async function importNoPaidMessagesToken(client, userId, token) {
+  const res = await client.call({
+    _: "contacts.importNoPaidMessagesToken",
+    userId: await resolveUser(client, userId),
+    token
+  });
+  assertTypeIs(res, "user");
+  return new User$2(res);
 }
 
 async function setContactNote(client, userId, note) {
@@ -87917,13 +90425,13 @@ async function joinChatlist(client, link, params) {
     slug: link,
     peers
   });
-  assertIsUpdatesGroup("joinChatlist", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   const filter = res.updates.find((it) => it._ === "updateDialogFilter");
   if (!filter?.filter) {
-    throw new MtTypeAssertionError("joinChatlist", "updateDialogFilter", "nothing");
+    throw new MtcuteError("Response does not contain updateDialogFilter");
   }
-  assertTypeIs("joinChatlist", filter.filter, "dialogFilterChatlist");
+  assertTypeIs(filter.filter, "dialogFilterChatlist");
   return filter.filter;
 }
 
@@ -87935,15 +90443,32 @@ async function setFoldersOrder(client, order) {
   assertTrue("messages.updateDialogFiltersOrder", r);
 }
 
+async function deleteAllWelcomeMessages(client, chatId) {
+  const r = await client.call({
+    _: "ephemeral.deleteAllWelcomeMessages",
+    peer: await resolvePeer(client, chatId)
+  });
+  assertTrue("ephemeral.deleteAllWelcomeMessages", r);
+}
+
 async function deleteEphemeralMessage(client, params) {
   const { chatId, receiverId, messageId } = params;
   const r = await client.call({
     _: "ephemeral.deleteMessage",
-    peer: await resolvePeer(client, chatId),
+    peer: chatId !== null ? await resolvePeer(client, chatId) : void 0,
     receiverId: await resolveUser(client, receiverId),
     id: messageId
   });
   assertTrue("ephemeral.deleteMessage", r);
+}
+
+async function deleteWelcomeMessage(client, chatId, messageId) {
+  const r = await client.call({
+    _: "ephemeral.deleteWelcomeMessage",
+    peer: await resolvePeer(client, chatId),
+    id: messageId
+  });
+  assertTrue("ephemeral.deleteWelcomeMessage", r);
 }
 
 class EphemeralMessage {
@@ -87963,9 +90488,28 @@ class EphemeralMessage {
   get sender() {
     return parsePeer(this.raw.fromId, this._peers);
   }
-  /** Chat where this message was sent */
+  /**
+   * Chat where this message was sent.
+   *
+   * `null` if not available (e.g. welcome message templates)
+   */
   get chat() {
-    return parsePeer(this.raw.peerId, this._peers);
+    return this.raw.peerId ? parsePeer(this.raw.peerId, this._peers) : null;
+  }
+  /** Whether this message is a welcome message template */
+  get isWelcomeTemplate() {
+    return this.raw.welcomeTemplate;
+  }
+  /**
+   * If set, any eventual webpage preview should be shown on top of
+   * the message instead of at the bottom.
+   */
+  get invertMedia() {
+    return this.raw.invertMedia;
+  }
+  /** Whether this message can't be forwarded */
+  get isContentProtected() {
+    return this.raw.noforwards;
   }
   /** ID of the user this message is visible to */
   get receiverId() {
@@ -88032,12 +90576,24 @@ class EphemeralMessage {
   get replyTo() {
     return this.raw.replyTo ?? null;
   }
+  /** Rich message content, if any */
+  get richMessage() {
+    return this.raw.richMessage ? new RichMessage$2(this.raw.richMessage) : null;
+  }
+  /** Identifier uniquely corresponding to the chat this message was sent to, if any */
+  get chatInstance() {
+    return this.raw.chatInstance ?? null;
+  }
+  /** ID of the message this message is anchored to, if any */
+  get anchorMessageId() {
+    return this.raw.anchorMsgId ?? null;
+  }
 }
-const EphemeralMessage$1 = /* @__PURE__ */ memoizeGetters(EphemeralMessage, ["sender", "chat", "receiver", "entities", "media"]);
+const EphemeralMessage$1 = /* @__PURE__ */ memoizeGetters(EphemeralMessage, ["sender", "chat", "receiver", "entities", "media", "richMessage"]);
 const EphemeralMessage$2 = /* @__PURE__ */ makeInspectable(EphemeralMessage$1);
 
 function _findEphemeralMessageInUpdate(client, res, isEdit = false, noDispatch = true) {
-  assertIsUpdatesGroup("_findEphemeralMessageInUpdate", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, noDispatch);
   for (const u of res.updates) {
     if (u._ !== "updateNewEphemeralMessage" && u._ !== "updateEditEphemeralMessage") continue;
@@ -88045,21 +90601,20 @@ function _findEphemeralMessageInUpdate(client, res, isEdit = false, noDispatch =
     const peers = PeersIndex.from(res);
     return new EphemeralMessage$2(u.message, peers);
   }
-  throw new MtTypeAssertionError(
-    "_findEphemeralMessageInUpdate (@ .updates[*])",
-    "updateNewEphemeralMessage | updateEditEphemeralMessage",
-    "none"
-  );
+  throw new MtcuteError("Response does not contain updateNewEphemeralMessage | updateEditEphemeralMessage");
 }
 
 async function editEphemeralMessage(client, params) {
-  const { chatId, receiverId, messageId, text, media, replyMarkup, shouldDispatch } = params;
+  const { chatId, receiverId, messageId, text, media, richMessage, replyMarkup, shouldDispatch, uploadCache } = params;
   let message;
   let entities;
   if (text !== void 0) {
     [message, entities] = await _normalizeInputText(client, text);
   }
-  const peer = await resolvePeer(client, chatId);
+  const peer = chatId !== null ? await resolvePeer(client, chatId) : void 0;
+  if (richMessage && !peer) {
+    throw new MtArgumentError("richMessage requires chatId to be passed");
+  }
   const res = await client.call({
     _: "ephemeral.editMessage",
     peer,
@@ -88068,7 +90623,10 @@ async function editEphemeralMessage(client, params) {
     message,
     entities,
     media: media ? await _normalizeInputMedia(client, media, { uploadPeer: peer }) : void 0,
-    replyMarkup: _convertToTl$2(replyMarkup)
+    richMessage: richMessage ? await _normalizeInputRichMessage(client, peer, richMessage, { uploadCache }) : void 0,
+    replyMarkup: _convertToTl$2(replyMarkup),
+    welcome: params.welcome,
+    invertMedia: params.invertMedia
   });
   return _findEphemeralMessageInUpdate(client, res, true, !shouldDispatch);
 }
@@ -88095,10 +90653,62 @@ async function getEphemeralCallbackAnswer(client, params) {
   return promise;
 }
 
-async function sendEphemeralMessage(client, chatId, receiverId, text, params) {
-  const { media, replyTo, replyToEphemeral, queryId, shouldDispatch } = params ?? {};
-  const [message, entities] = await _normalizeInputText(client, text);
+async function _buildPeersIndex(client, peersToFetch) {
+  const peers = new PeersIndex();
+  await Promise.all(peersToFetch.map(async (peer) => {
+    const id = getMarkedPeerId(peer);
+    let cached = await client.storage.peers.getCompleteById(id);
+    if (!cached) {
+      cached = await _getRawPeerBatched(client, await resolvePeer(client, peer));
+    }
+    if (!cached) {
+      throw new MtPeerNotFoundError(`Peer ${id} not found`);
+    }
+    switch (cached._) {
+      case "user":
+        peers.users.set(cached.id, cached);
+        break;
+      case "chat":
+      case "chatForbidden":
+      case "channel":
+      case "channelForbidden":
+        peers.chats.set(cached.id, cached);
+        break;
+      default:
+        throw new MtTypeAssertionError(
+          "user | chat | channel",
+          // not very accurate, but good enough
+          cached._
+        );
+    }
+  }));
+  return peers;
+}
+
+async function getWelcomeMessages(client, chatId) {
   const peer = await resolvePeer(client, chatId);
+  const res = await client.call({
+    _: "ephemeral.getWelcomeMessages",
+    peer,
+    hash: Long.ZERO
+  });
+  assertTypeIsNot(res, "ephemeral.welcomeMessagesNotModified");
+  const peersToFetch = [peer];
+  for (const msg of res.messages) {
+    peersToFetch.push(msg.fromId);
+    if (msg.peerId) peersToFetch.push(msg.peerId);
+  }
+  const peers = await _buildPeersIndex(client, peersToFetch);
+  return res.messages.map((it) => new EphemeralMessage$2(it, peers));
+}
+
+async function sendEphemeralMessage(client, chatId, receiverId, text, params) {
+  const { media, richMessage, replyTo, replyToEphemeral, queryId, shouldDispatch, uploadCache } = params ?? {};
+  const [message, entities] = await _normalizeInputText(client, text);
+  const peer = chatId !== null ? await resolvePeer(client, chatId) : void 0;
+  if (richMessage && !peer) {
+    throw new MtArgumentError("richMessage requires chatId to be passed");
+  }
   let replyToTl;
   if (replyTo !== void 0) {
     replyToTl = { _: "inputReplyToMessage", replyToMsgId: replyTo };
@@ -88113,9 +90723,14 @@ async function sendEphemeralMessage(client, chatId, receiverId, text, params) {
     message,
     entities,
     media: media ? await _normalizeInputMedia(client, media, { uploadPeer: peer }) : void 0,
+    richMessage: richMessage ? await _normalizeInputRichMessage(client, peer, richMessage, { uploadCache }) : void 0,
     replyMarkup: _convertToTl$2(params?.replyMarkup),
     randomId: randomLong(),
-    replyTo: replyToTl
+    replyTo: replyToTl,
+    welcome: params?.welcome,
+    anchor: params?.anchor,
+    invertMedia: params?.invertMedia,
+    noforwards: params?.forbidForwards
   });
   return _findEphemeralMessageInUpdate(client, res, false, !shouldDispatch);
 }
@@ -88381,6 +90996,9 @@ async function* downloadAsIterable(client, input, params) {
   } finally {
     if (stallTimer) clearTimeoutWrap(stallTimer);
     abortSignal?.removeEventListener("abort", onAbort);
+    ended = true;
+    for (const idx in buffer) delete buffer[Number(idx)];
+    nextChunkCv.notify();
   }
 }
 
@@ -88514,19 +91132,19 @@ async function uploadMedia(client, media, params = {}) {
     },
     media: normMedia
   });
-  assertTypeIsNot("uploadMedia", res, "messageMediaEmpty");
+  assertTypeIsNot(res, "messageMediaEmpty");
   switch (normMedia._) {
     case "inputMediaUploadedPhoto":
     case "inputMediaPhoto":
     case "inputMediaPhotoExternal":
-      assertTypeIs("uploadMedia", res, "messageMediaPhoto");
-      assertTypeIs("uploadMedia", res.photo, "photo");
+      assertTypeIs(res, "messageMediaPhoto");
+      assertTypeIs(res.photo, "photo");
       return new Photo$2(res.photo);
     case "inputMediaUploadedDocument":
     case "inputMediaDocument":
     case "inputMediaDocumentExternal":
-      assertTypeIs("uploadMedia", res, "messageMediaDocument");
-      assertTypeIs("uploadMedia", res.document, "document");
+      assertTypeIs(res, "messageMediaDocument");
+      assertTypeIs(res.document, "document");
       return parseDocument(res.document, res);
     case "inputMediaStory":
     case "inputMediaWebPage":
@@ -88578,7 +91196,7 @@ async function editForumTopic(client, params) {
     closed,
     hidden
   });
-  return _findMessageInUpdate(client, res, false, shouldDispatch);
+  return _findMessageInUpdate(client, res, false, !shouldDispatch);
 }
 
 async function getForumTopicsById(client, chatId, ids) {
@@ -88665,7 +91283,7 @@ async function toggleForumTopicClosed(client, parmas) {
     topicId: typeof topicId === "number" ? topicId : topicId.id,
     closed
   });
-  return _findMessageInUpdate(client, res, false, shouldDispatch);
+  return _findMessageInUpdate(client, res, false, !shouldDispatch);
 }
 
 async function toggleForumTopicPinned(client, params) {
@@ -88696,7 +91314,7 @@ async function toggleGeneralTopicHidden(client, params) {
     topicId: 1,
     hidden
   });
-  return _findMessageInUpdate(client, res, false, shouldDispatch);
+  return _findMessageInUpdate(client, res, false, !shouldDispatch);
 }
 
 async function _normalizeInputStarGift(client, gift) {
@@ -88723,25 +91341,29 @@ async function _normalizeInputStarGift(client, gift) {
 async function acceptStarGift(client, params) {
   const { action } = params;
   const inputStarGift = await _normalizeInputStarGift(client, params.gift);
-  return client.call(
-    action === "convert" ? {
-      _: "payments.convertStarGift",
-      stargift: inputStarGift
-    } : {
-      _: "payments.saveStarGift",
-      unsave: action === "hide",
-      stargift: inputStarGift
-    }
-  );
+  switch (action) {
+    case "convert":
+      return client.call({ _: "payments.convertStarGift", stargift: inputStarGift });
+    case "delete":
+      return client.call({ _: "payments.deleteStarGift", stargift: inputStarGift });
+    default:
+      return client.call({
+        _: "payments.saveStarGift",
+        unsave: action === "hide",
+        stargift: inputStarGift
+      });
+  }
 }
 
 async function buyResaleGift(client, params) {
-  const { slug, recipient, shouldDispatch, ton } = params;
+  const { slug, recipient, shouldDispatch, ton, anonymous, message } = params;
   const invoice = {
     _: "inputInvoiceStarGiftResale",
     slug,
     toId: await resolvePeer(client, recipient),
-    ton
+    ton,
+    showName: anonymous === false,
+    message: message ? inputTextToTl(message) : void 0
   };
   const form = await client.call({
     _: "payments.getPaymentForm",
@@ -88752,8 +91374,17 @@ async function buyResaleGift(client, params) {
     invoice,
     formId: form.formId
   });
-  assertTypeIs("payments.sendStarsForm", res, "payments.paymentResult");
+  assertTypeIs(res, "payments.paymentResult");
   return _findMessageInUpdate(client, res.updates, false, !shouldDispatch, true);
+}
+
+async function displayStarGiftFromLinkedWallet(client, params) {
+  const res = await client.call({
+    _: "payments.displayStarGift",
+    peer: params.peer ? await resolvePeer(client, params.peer) : void 0,
+    slug: params.slug
+  });
+  assertTrue("payments.displayStarGift", res);
 }
 
 function _normalizeResaleAttributes(attrs) {
@@ -88944,6 +91575,13 @@ class SavedStarGift {
   get prepaidUpgradeHash() {
     return this.raw.prepaidUpgradeHash ?? null;
   }
+  /**
+   * True, if the upgrade was bought after the gift was sent.
+   * In this case, {@link upgradeStars} must not be added to the gift cost
+   */
+  get upgradeSeparate() {
+    return this.raw.upgradeSeparate;
+  }
   /** Number of the gift for limited-offer gifts */
   get giftNum() {
     return this.raw.giftNum ?? null;
@@ -88986,12 +91624,26 @@ async function getSavedStarGifts(client, params) {
   );
 }
 
+async function getStarGiftDepositInfo(client, params) {
+  const res = await client.call({
+    _: "payments.depositStarGift",
+    peer: await resolvePeer(client, params.recipient),
+    slug: params.slug,
+    hideSender: params.hideSender
+  });
+  return {
+    nftAddress: res.nftAddress,
+    payload: res.payload,
+    amount: res.amount
+  };
+}
+
 async function getStarGiftOptions(client) {
   const res = await client.call({
     _: "payments.getStarGifts",
     hash: 0
   });
-  assertTypeIsNot("payments.getStarGifts", res, "payments.starGiftsNotModified");
+  assertTypeIsNot(res, "payments.starGiftsNotModified");
   const peers = PeersIndex.from(res);
   const ret = [];
   for (const gift of res.gifts) {
@@ -89095,10 +91747,15 @@ async function getStarGiftWithdrawalUrl(client, params) {
     }),
     params.password
   );
+  const { tmpPassword } = await client.call({
+    _: "account.getTmpPassword",
+    password,
+    period: 60
+  });
   const res = await client.call({
     _: "payments.getStarGiftWithdrawalUrl",
     stargift: await _normalizeInputStarGift(client, params.gift),
-    password
+    tmpPassword
   });
   return res.url;
 }
@@ -89170,7 +91827,7 @@ async function prepayStarGiftUpgrade(client, params) {
     invoice,
     formId: form.formId
   });
-  assertTypeIs("payments.sendStarsForm", res, "payments.paymentResult");
+  assertTypeIs(res, "payments.paymentResult");
   return _findMessageInUpdate(client, res.updates, false, !shouldDispatch, true);
 }
 
@@ -89181,16 +91838,6 @@ async function resolveStarGiftOffer(client, options) {
     offerMsgId: message
   });
   return _findMessageInUpdate(client, res, false, !shouldDispatch, false);
-}
-
-function _normalizeStarsAmount(amount) {
-  if (typeof amount === "number") {
-    return { _: "starsAmount", amount: Long.fromNumber(amount), nanos: 0 };
-  } else if (Long.isLong(amount)) {
-    return { _: "starsAmount", amount, nanos: 0 };
-  } else {
-    return amount;
-  }
 }
 
 async function sendStarGiftOffer(client, params) {
@@ -89234,7 +91881,7 @@ async function sendStarGift(client, params) {
     invoice,
     formId: form.formId
   });
-  assertTypeIs("payments.sendStarsForm", res, "payments.paymentResult");
+  assertTypeIs(res, "payments.paymentResult");
   return _findMessageInUpdate(client, res.updates, false, !shouldDispatch, true);
 }
 
@@ -89272,7 +91919,7 @@ async function transferStarGift(client, params) {
       invoice,
       formId: form.formId
     });
-    assertTypeIs("payments.sendStarsForm", res, "payments.paymentResult");
+    assertTypeIs(res, "payments.paymentResult");
     updates = res.updates;
   } catch (e) {
     if (RpcError.is(e, "NO_PAYMENT_NEEDED")) {
@@ -89306,7 +91953,7 @@ async function upgradeStarGift(client, params) {
       invoice,
       formId: form.formId
     });
-    assertTypeIs("payments.sendStarsForm", res, "payments.paymentResult");
+    assertTypeIs(res, "payments.paymentResult");
     updates = res.updates;
   } catch (e) {
     if (RpcError.is(e, "NO_PAYMENT_NEEDED")) {
@@ -89320,6 +91967,27 @@ async function upgradeStarGift(client, params) {
     }
   }
   return _findMessageInUpdate(client, updates, false, !shouldDispatch, true);
+}
+
+async function withdrawStarGiftToLinkedWallet(client, params) {
+  const password = await client.computeSrpParams(
+    await client.call({
+      _: "account.getPassword"
+    }),
+    params.password
+  );
+  const { tmpPassword } = await client.call({
+    _: "account.getTmpPassword",
+    password,
+    period: 60
+  });
+  const res = await client.call({
+    _: "payments.withdrawStarGift",
+    stargift: await _normalizeInputStarGift(client, params.gift),
+    tmpPassword,
+    keepOnProfile: params.keepOnProfile
+  });
+  assertTrue("payments.withdrawStarGift", res);
 }
 
 async function createInviteLink(client, chatId, params) {
@@ -89472,14 +92140,10 @@ async function getPrimaryInviteLink(client, chatId) {
     revoked: false
   });
   if (res.invites[0]?._ !== "chatInviteExported") {
-    throw new MtTypeAssertionError(
-      "messages.getExportedChatInvites (@ .invites[0])",
-      "chatInviteExported",
-      res.invites[0]?._
-    );
+    throw new MtTypeAssertionError("chatInviteExported", res.invites[0]?._ ?? "nothing");
   }
   if (!res.invites[0].permanent) {
-    throw new MtTypeAssertionError("messages.getExportedChatInvites (@ .invites[0].permanent)", "true", "false");
+    throw new MtcuteError("Primary invite link is not permanent");
   }
   const peers = PeersIndex.from(res);
   return new ChatInviteLink$2(res.invites[0], peers);
@@ -89568,6 +92232,21 @@ async function revokeInviteLink(client, chatId, link) {
   return new ChatInviteLink$2(invite, peers);
 }
 
+async function addPollAnswer(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const peer = await resolvePeer(client, chatId);
+  const res = await client.call({
+    _: "messages.addPollAnswer",
+    peer,
+    msgId: message,
+    answer: await _normalizeInputPollAnswer(client, params.answer, {
+      progressCallback: params.progressCallback,
+      uploadPeer: peer
+    })
+  });
+  client.handleClientUpdate(res, !params.shouldDispatch);
+}
+
 async function getMessages(client, chatId, messageIds, fromReply = false) {
   const peer = await resolvePeer(client, chatId);
   if (!Array.isArray(messageIds)) messageIds = [messageIds];
@@ -89587,7 +92266,7 @@ async function getMessages(client, chatId, messageIds, fromReply = false) {
       id: ids
     }
   );
-  assertTypeIsNot("getMessages", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   let selfId;
   return res.messages.map((msg) => {
@@ -89643,6 +92322,26 @@ async function appendTodoList(client, params) {
   return _findMessageInUpdate(client, res, false, !shouldDispatch, true);
 }
 
+function _findPollInUpdate(client, res, noDispatch, knownPoll) {
+  assertIsUpdatesGroup(res);
+  client.handleClientUpdate(res, noDispatch);
+  const upd = res.updates.find((it) => it._ === "updateMessagePoll");
+  if (!upd) {
+    throw new MtcuteError("Response does not contain updateMessagePoll");
+  }
+  if (upd.poll) {
+    return new Poll$2(upd.poll, PeersIndex.from(res), upd.results, knownPoll?.attachedMedia);
+  }
+  if (!knownPoll) {
+    throw new MtcuteError("updateMessagePoll does not contain poll");
+  }
+  const peers = PeersIndex.from({
+    users: [...knownPoll._peers.users.values(), ...res.users],
+    chats: [...knownPoll._peers.chats.values(), ...res.chats]
+  });
+  return new Poll$2(knownPoll.raw, peers, upd.results, knownPoll.attachedMedia);
+}
+
 async function closePoll(client, params) {
   const { chatId, message } = normalizeInputMessageId(params);
   const res = await client.call({
@@ -89661,43 +92360,7 @@ async function closePoll(client, params) {
       }
     }
   });
-  assertIsUpdatesGroup("messages.editMessage", res);
-  client.handleClientUpdate(res, !params.shouldDispatch);
-  const upd = res.updates[0];
-  assertTypeIs("messages.editMessage (@ .updates[0])", upd, "updateMessagePoll");
-  if (!upd.poll) {
-    throw new MtTypeAssertionError("messages.editMessage (@ .updates[0].poll)", "poll", "undefined");
-  }
-  const peers = PeersIndex.from(res);
-  return new Poll$2(upd.poll, peers, upd.results);
-}
-
-async function createRichStreamingDraft(client, chatId, params) {
-  const { threadId, businessConnectionId, progressCallback } = params ?? {};
-  const randomId = randomLong();
-  const peer = await resolvePeer(client, chatId);
-  const uploadCache = params?.disableUploadCache ? void 0 : /* @__PURE__ */ new Map();
-  const sendDraft = async (content) => {
-    const richMessage = await _normalizeInputRichMessage(client, peer, content, { progressCallback, uploadCache });
-    const r = await client.call({
-      _: "messages.setTyping",
-      peer,
-      action: {
-        _: "inputSendMessageRichMessageDraftAction",
-        randomId,
-        richMessage
-      },
-      topMsgId: threadId
-    }, {
-      businessConnectionId
-    });
-    assertTrue("messages.setTyping", r);
-  };
-  return {
-    randomId,
-    send: sendDraft,
-    uploadCache
-  };
+  return _findPollInUpdate(client, res, !params.shouldDispatch);
 }
 
 function joinTextWithEntities(parts, delim = "") {
@@ -89732,16 +92395,52 @@ function joinTextWithEntities(parts, delim = "") {
   };
 }
 
+const draftStopListeners = /* @__PURE__ */ new WeakMap();
+function _listenForDraftStop(client, randomId) {
+  const emitter = client.onRawUpdate;
+  const removeController = (randomId2) => {
+    const listener2 = draftStopListeners.get(emitter);
+    if (!listener2?.controllers.delete(randomId2) || listener2.controllers.size > 0) return;
+    emitter.remove(listener2.onUpdate);
+    draftStopListeners.delete(emitter);
+  };
+  let listener = draftStopListeners.get(emitter);
+  if (!listener) {
+    const controllers = new LongMap();
+    listener = {
+      controllers,
+      onUpdate: ({ update }) => {
+        if (update._ !== "updateUserTyping" || update.action._ !== "sendMessageStopDraftAction") return;
+        const controller2 = controllers.get(update.action.randomId);
+        if (!controller2) return;
+        removeController(update.action.randomId);
+        controller2.abort();
+      }
+    };
+    draftStopListeners.set(emitter, listener);
+    emitter.add(listener.onUpdate);
+  }
+  const controller = new AbortController();
+  listener.controllers.set(randomId, controller);
+  return {
+    signal: controller.signal,
+    dispose: () => removeController(randomId)
+  };
+}
 async function createStreamingDraft(client, chatId, params) {
   const {
     mode = "replace",
     threadId,
-    businessConnectionId
+    businessConnectionId,
+    canStop,
+    keepOnStop
   } = params ?? {};
   const randomId = randomLong();
   const peer = await resolvePeer(client, chatId);
+  const stopListener = canStop ? _listenForDraftStop(client, randomId) : void 0;
   let previousText;
   const sendDraft = async (text) => {
+    if (stopListener?.signal.aborted) return;
     if (typeof text === "string") {
       text = { text };
     }
@@ -89750,11 +92449,14 @@ async function createStreamingDraft(client, chatId, params) {
     }
     previousText = text;
     const [_text, entities = []] = await _normalizeInputText(client, text);
+    if (stopListener?.signal.aborted) return;
     const r = await client.call({
       _: "messages.setTyping",
       peer,
       action: {
         _: "sendMessageTextDraftAction",
+        canStop,
+        keepOnStop,
         text: {
           _: "textWithEntities",
           text: _text,
@@ -89773,7 +92475,45 @@ async function createStreamingDraft(client, chatId, params) {
     send: sendDraft,
     get finalText() {
       return previousText ?? { text: "", entities: [] };
-    }
+    },
+    signal: stopListener?.signal,
+    dispose: () => stopListener?.dispose(),
+    [Symbol.dispose]: () => stopListener?.dispose()
+  };
+}
+
+async function createRichStreamingDraft(client, chatId, params) {
+  const { threadId, businessConnectionId, progressCallback, canStop, keepOnStop } = params ?? {};
+  const randomId = randomLong();
+  const peer = await resolvePeer(client, chatId);
+  const stopListener = canStop ? _listenForDraftStop(client, randomId) : void 0;
+  const uploadCache = params?.disableUploadCache ? void 0 : /* @__PURE__ */ new Map();
+  const sendDraft = async (content) => {
+    if (stopListener?.signal.aborted) return;
+    const richMessage = await _normalizeInputRichMessage(client, peer, content, { progressCallback, uploadCache });
+    if (stopListener?.signal.aborted) return;
+    const r = await client.call({
+      _: "messages.setTyping",
+      peer,
+      action: {
+        _: "inputSendMessageRichMessageDraftAction",
+        canStop,
+        keepOnStop,
+        randomId,
+        richMessage
+      },
+      topMsgId: threadId
+    }, {
+      businessConnectionId
+    });
+    assertTrue("messages.setTyping", r);
+  };
+  return {
+    randomId,
+    send: sendDraft,
+    uploadCache,
+    signal: stopListener?.signal,
+    dispose: () => stopListener?.dispose()
   };
 }
 
@@ -89832,6 +92572,36 @@ async function deleteMessages(client, messages, params) {
   }
 }
 
+async function deletePollAnswer(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const res = await client.call({
+    _: "messages.deletePollAnswer",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    option: params.option
+  });
+  client.handleClientUpdate(res, !params.shouldDispatch);
+}
+
+async function deleteMessageReactionsFromSender(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const res = await client.call({
+    _: "messages.deleteParticipantReaction",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    participant: await resolvePeer(client, params.sender)
+  });
+  client.handleClientUpdate(res, !params.shouldDispatch);
+}
+async function deleteRecentReactionsFromSender(client, chatId, senderId) {
+  const res = await client.call({
+    _: "messages.deleteParticipantReactions",
+    peer: await resolvePeer(client, chatId),
+    participant: await resolvePeer(client, senderId)
+  });
+  assertTrue("messages.deleteParticipantReactions", res);
+}
+
 async function editInlineMessage(client, params) {
   let content;
   let entities;
@@ -89845,6 +92615,10 @@ async function editInlineMessage(client, params) {
   } else if (params.text !== void 0) {
     [content, entities] = await _normalizeInputText(client, params.text);
   }
+  const richMessage = params.richMessage ? await _normalizeInputRichMessage(client, { _: "inputPeerSelf" }, params.richMessage, {
+    progressCallback: params.progressCallback ? (id2, uploaded, total) => params.progressCallback?.(uploaded, total, id2) : void 0,
+    uploadCache: params.uploadCache
+  }) : void 0;
   let retries = 3;
   while (retries--) {
     try {
@@ -89857,7 +92631,8 @@ async function editInlineMessage(client, params) {
           message: content,
           entities,
           media,
-          invertMedia: params.invertMedia
+          invertMedia: params.invertMedia,
+          richMessage
         },
         { dcId: id.dcId }
       );
@@ -89876,6 +92651,7 @@ async function editMessage(client, params) {
   let content;
   let entities;
   let media;
+  const peer = await resolvePeer(client, chatId);
   if (params.media) {
     media = await _normalizeInputMedia(client, params.media, params);
     if ("caption" in params.media && params.media.caption !== void 0) {
@@ -89888,13 +92664,19 @@ async function editMessage(client, params) {
   const res = await client.call({
     _: "messages.editMessage",
     id: message,
-    peer: await resolvePeer(client, chatId),
+    peer,
     noWebpage: params.disableWebPreview,
     replyMarkup: _convertToTl$2(params.replyMarkup),
     message: content,
     entities,
     media,
-    invertMedia: params.invertMedia
+    richMessage: params.richMessage ? await _normalizeInputRichMessage(client, peer, params.richMessage, {
+      progressCallback: params.progressCallback ? (_id, uploaded, total) => params.progressCallback?.(uploaded, total) : void 0,
+      uploadCache: params.uploadCache
+    }) : void 0,
+    invertMedia: params.invertMedia,
+    scheduleDate: normalizeDate(params.scheduleDate),
+    scheduleRepeatPeriod: params.scheduleRepeatPeriod
   }, {
     businessConnectionId: params.businessConnectionId
   });
@@ -90009,7 +92791,7 @@ async function setTyping(client, params) {
     threadId
   } = params;
   let status = params.status ?? "typing";
-  if (typeof status === "string") status = _mapTypingStatus(status);
+  if (typeof status === "string") status = _mapTypingStatus(status, params.progress ?? 0);
   const peer = await resolvePeer(client, peerId);
   const timerId = _getTypingTimerId(peer, businessConnectionId);
   await client.timers.cancel(timerId);
@@ -90082,6 +92864,7 @@ async function _processCommonSendParameters(client, chatId, params) {
       quoteText: params.quote?.text,
       quoteEntities: params.quote?.entities,
       quoteOffset: params.quoteOffset,
+      quoteRich: params.quoteRich,
       monoforumPeerId: params.toMonoforumPeer ? await resolvePeer(client, params.toMonoforumPeer) : void 0,
       todoItemId: params.replyToTodoItem,
       pollOption: params.replyToPollOption
@@ -90150,13 +92933,17 @@ async function forwardMessagesById(client, params) {
     allowPaidFloodskip,
     videoTimestamp,
     allowPaidStars: params.allowPaidMessages,
+    fromEphemeral: params.fromEphemeral,
+    effect: params.effect,
+    suggestedPost: _normalizeInputSuggestedPost(params.suggestedPost),
+    scheduleRepeatPeriod: params.scheduleRepeatPeriod,
     topMsgId: toThreadId,
     replyTo: toMonoforumPeer ? {
       _: "inputReplyToMonoForum",
       monoforumPeerId: await resolvePeer(client, toMonoforumPeer)
     } : void 0
   });
-  assertIsUpdatesGroup("messages.forwardMessages", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, !params.shouldDispatch);
   const peers = PeersIndex.from(res);
   const forwarded = [];
@@ -90187,10 +92974,10 @@ async function getAllScheduledMessages(client, chatId) {
     peer,
     hash: Long.ZERO
   });
-  assertTypeIsNot("getScheduledMessages", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const ret = res.messages.map((msg) => {
-    assertTypeIsNot("getScheduledMessages", msg, "messageEmpty");
+    assertTypeIsNot(msg, "messageEmpty");
     return new Message$2(msg, peers, true);
   });
   return ret;
@@ -90226,11 +93013,11 @@ class MessageEffect {
   get icon() {
     const document = this.documentsMap.get(this.raw.effectStickerId);
     if (!document) {
-      throw new MtTypeAssertionError("MessageEffect.effect", "document", "null");
+      throw new MtcuteError(`Effect document ${this.raw.effectStickerId} not found`);
     }
     const parsed = parseSticker(document);
     if (!parsed) {
-      throw new MtTypeAssertionError("MessageEffect.effect", "sticker", "null");
+      throw new MtcuteError("Effect document is not a sticker");
     }
     return parsed;
   }
@@ -90252,7 +93039,7 @@ async function getAvailableMessageEffects(client) {
     _: "messages.getAvailableEffects",
     hash: 0
   });
-  assertTypeIsNot("getAvailableMessageEffects", res, "messages.availableEffectsNotModified");
+  assertTypeIsNot(res, "messages.availableEffectsNotModified");
   const documentsMap = new LongMap();
   for (const doc of res.documents) {
     if (doc._ !== "document") continue;
@@ -90294,7 +93081,7 @@ async function getCallbackQueryMessage(client, id) {
       id: [inputMessage]
     }
   );
-  assertTypeIsNot("getCallbackQueryMessage", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   if (res.messages[0]._ === "messageEmpty") {
     return null;
   }
@@ -90346,7 +93133,7 @@ async function getHistory(client, chatId, params) {
     minId,
     hash: Long.ZERO
   });
-  assertTypeIsNot("getHistory", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
   if (reverse) msgs.reverse();
@@ -90538,12 +93325,12 @@ async function getMessageReactionsById(client, chatId, messages) {
     peer: await resolvePeer(client, chatId),
     id: messages
   });
-  assertIsUpdatesGroup("messages.getMessagesReactions", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   const index = {};
   const peers = PeersIndex.from(res);
   for (const update of res.updates) {
-    assertTypeIs("messages.getMessagesReactions", update, "updateMessageReactions");
+    assertTypeIs(update, "updateMessageReactions");
     index[update.msgId] = new MessageReactions$2(update.msgId, getMarkedPeerId(update.peer), update.reactions, peers);
   }
   return messages.map((messageId) => index[messageId] ?? null);
@@ -90567,12 +93354,77 @@ async function getMessagesUnsafe(client, messageIds, fromReply = false) {
     _: "messages.getMessages",
     id: ids
   });
-  assertTypeIsNot("getMessagesUnsafe", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   return res.messages.map((msg) => {
     if (msg._ === "messageEmpty") return null;
     return new Message$2(msg, peers);
   });
+}
+
+async function getPollResults(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  let knownPoll = params.poll;
+  if (!knownPoll && typeof params.message !== "number" && params.message.media instanceof Poll$2) {
+    knownPoll = params.message.media;
+  }
+  const res = await client.call({
+    _: "messages.getPollResults",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    pollHash: knownPoll?.hash ?? Long.ZERO
+  });
+  return _findPollInUpdate(client, res, !params.shouldDispatch, knownPoll);
+}
+
+class StatsGraph {
+  constructor(raw) {
+    this.raw = raw;
+  }
+  /**
+   * Status of the graph:
+   *  - `loaded`: graph data is available in {@link json}
+   *  - `async`: graph data must be loaded asynchronously using {@link token}
+   *  - `error`: graph could not be loaded, see {@link error}
+   */
+  get status() {
+    switch (this.raw._) {
+      case "statsGraph":
+        return "loaded";
+      case "statsGraphAsync":
+        return "async";
+      case "statsGraphError":
+        return "error";
+    }
+  }
+  /** Graph data in JSON format, if {@link status} is `loaded` */
+  get json() {
+    return this.raw._ === "statsGraph" ? this.raw.json.data : null;
+  }
+  /** Token for loading a zoomed in graph, if available */
+  get zoomToken() {
+    return this.raw._ === "statsGraph" ? this.raw.zoomToken ?? null : null;
+  }
+  /** Token for loading the graph data, if {@link status} is `async` */
+  get token() {
+    return this.raw._ === "statsGraphAsync" ? this.raw.token : null;
+  }
+  /** Error message to be shown instead of the graph, if {@link status} is `error` */
+  get error() {
+    return this.raw._ === "statsGraphError" ? this.raw.error : null;
+  }
+}
+const StatsGraph$1 = /* @__PURE__ */ makeInspectable(StatsGraph);
+
+async function getPollStats(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const res = await client.call({
+    _: "stats.getPollStats",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    dark: params.dark
+  });
+  return new StatsGraph$1(res.votesGraph);
 }
 
 async function getReactionUsers(client, params) {
@@ -90616,13 +93468,32 @@ async function getScheduledMessages(client, chatId, messageIds) {
     peer,
     id: messageIds
   });
-  assertTypeIsNot("getScheduledMessages", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const ret = res.messages.map((msg) => {
     if (msg._ === "messageEmpty") return null;
     return new Message$2(msg, peers, true);
   });
   return ret;
+}
+
+async function getUnreadPollVotes(client, chatId, params) {
+  const { threadId, offset = 0, addOffset = 0, minId = 0, maxId = 0, limit = 100 } = params ?? {};
+  const res = await client.call({
+    _: "messages.getUnreadPollVotes",
+    peer: await resolvePeer(client, chatId),
+    topMsgId: threadId,
+    offsetId: offset,
+    addOffset,
+    limit,
+    minId,
+    maxId
+  });
+  assertTypeIsNot(res, "messages.messagesNotModified");
+  const peers = PeersIndex.from(res);
+  const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
+  const last = msgs[msgs.length - 1];
+  return makeArrayPaginated(msgs, res.count ?? msgs.length, last?.id);
 }
 
 async function getWebPagePreview(client, text) {
@@ -90700,7 +93571,8 @@ async function searchGlobal(client, params) {
     filter = SearchFilters.Empty,
     limit = 100,
     offset: { rate: offsetRate, peer: offsetPeer, id: offsetId } = defaultOffset$2,
-    onlyChannels
+    onlyChannels,
+    communityId
   } = params;
   const minDate = normalizeDate(params.minDate) ?? 0;
   const maxDate = normalizeDate(params.maxDate) ?? 0;
@@ -90714,9 +93586,10 @@ async function searchGlobal(client, params) {
     offsetRate,
     offsetPeer,
     limit,
-    broadcastsOnly: onlyChannels
+    broadcastsOnly: onlyChannels,
+    community: communityId ? await resolveChannel(client, communityId) : void 0
   });
-  assertTypeIsNot("searchGlobal", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
   const last = msgs[msgs.length - 1];
@@ -90731,6 +93604,7 @@ async function searchGlobal(client, params) {
 async function* iterSearchGlobal(client, params) {
   if (!params) params = {};
   const { query = "", filter = SearchFilters.Empty, limit = Infinity, chunkSize = 100, onlyChannels } = params;
+  const communityId = params.communityId ? await resolveChannel(client, params.communityId) : void 0;
   const minDate = normalizeDate(params.minDate) ?? 0;
   const maxDate = normalizeDate(params.maxDate) ?? 0;
   let { offset } = params;
@@ -90743,7 +93617,8 @@ async function* iterSearchGlobal(client, params) {
       minDate,
       maxDate,
       offset,
-      onlyChannels
+      onlyChannels,
+      communityId
     });
     if (!res.length) return;
     for (const msg of res) {
@@ -90788,7 +93663,7 @@ async function searchMessages(client, params) {
     topMsgId: threadId,
     hash: Long.ZERO
   });
-  assertTypeIsNot("searchMessages", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
   const last = msgs[msgs.length - 1];
@@ -90827,6 +93702,29 @@ async function* iterSearchMessages(client, params) {
       fromUser,
       minDate,
       maxDate,
+      limit: Math.min(chunkSize, limit - current)
+    });
+    if (!res.length) break;
+    for (const msg of res) {
+      yield msg;
+      if (++current >= limit) return;
+    }
+    if (!res.next) break;
+    offset = res.next;
+    addOffset = void 0;
+  }
+}
+
+async function* iterUnreadPollVotes(client, chatId, params) {
+  const { limit = Infinity, chunkSize = 100, ...rest } = params ?? {};
+  const peer = await resolvePeer(client, chatId);
+  let { offset, addOffset } = rest;
+  let current = 0;
+  for (; ; ) {
+    const res = await getUnreadPollVotes(client, peer, {
+      ...rest,
+      offset,
+      addOffset,
       limit: Math.min(chunkSize, limit - current)
     });
     if (!res.length) break;
@@ -90887,14 +93785,39 @@ async function readHistory(client, chatId, params) {
   }
 }
 
+async function readPollVotes(client, chatId, params) {
+  const { threadId, shouldDispatch } = params ?? {};
+  const peer = await resolvePeer(client, chatId);
+  for (; ; ) {
+    const res = await client.call({
+      _: "messages.readPollVotes",
+      peer,
+      topMsgId: threadId
+    });
+    if (!shouldDispatch) {
+      client.handleClientUpdate(
+        createDummyUpdate(res.pts, res.ptsCount, isInputPeerChannel(peer) ? peer.channelId : 0)
+      );
+    }
+    if (!res.offset) break;
+  }
+}
+
 async function readReactions(client, chatId, params) {
-  const { shouldDispatch } = params ?? {};
+  const { topicId, topicPeer, shouldDispatch } = params ?? {};
+  const peer = await resolvePeer(client, chatId);
   const res = await client.call({
     _: "messages.readReactions",
-    peer: await resolvePeer(client, chatId)
+    peer,
+    topMsgId: topicId,
+    savedPeerId: topicPeer ? await resolvePeer(client, topicPeer) : void 0
   });
   if (!shouldDispatch) {
-    client.handleClientUpdate(createDummyUpdate(res.pts, res.ptsCount));
+    if (isInputPeerChannel(peer)) {
+      client.handleClientUpdate(createDummyUpdate(res.pts, res.ptsCount, peer.channelId));
+    } else {
+      client.handleClientUpdate(createDummyUpdate(res.pts, res.ptsCount));
+    }
   }
 }
 
@@ -90913,7 +93836,7 @@ async function searchHashtag(client, hashtag, params) {
     offsetPeer,
     limit
   });
-  assertTypeIsNot("searchHashtag", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
   const last = msgs[msgs.length - 1];
@@ -90964,7 +93887,7 @@ async function searchPostsGlobal(client, query, params) {
     offsetPeer,
     limit
   });
-  assertTypeIsNot("searchHashtag", res, "messages.messagesNotModified");
+  assertTypeIsNot(res, "messages.messagesNotModified");
   const peers = PeersIndex.from(res);
   const msgs = res.messages.filter((msg) => msg._ !== "messageEmpty").map((msg) => new Message$2(msg, peers));
   const last = msgs[msgs.length - 1];
@@ -91048,7 +93971,7 @@ async function sendMediaGroup(client, chatId, medias, params) {
       businessConnectionId: params.businessConnectionId
     }
   );
-  assertIsUpdatesGroup("sendMediaGroup", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
   const peers = PeersIndex.from(res);
   const msgs = res.updates.filter(
@@ -91102,7 +94025,9 @@ async function sendMedia(client, chatId, media, params) {
       quickReplyShortcut,
       effect: params.effect,
       allowPaidFloodskip: params.allowPaidFloodskip,
-      allowPaidStars: params.allowPaidMessages
+      allowPaidStars: params.allowPaidMessages,
+      suggestedPost: _normalizeInputSuggestedPost(params.suggestedPost),
+      scheduleRepeatPeriod: params.scheduleRepeatPeriod
     },
     {
       chainId,
@@ -91168,6 +94093,7 @@ async function sendText(client, chatId, text, params) {
   );
   const randomId = params.randomId ?? randomLong();
   const sendAs = params.sendAs ? await resolvePeer(client, params.sendAs) : void 0;
+  const suggestedPost = _normalizeInputSuggestedPost(params.suggestedPost);
   const res = await client.call(
     {
       _: "messages.sendMessage",
@@ -91187,7 +94113,9 @@ async function sendText(client, chatId, text, params) {
       quickReplyShortcut,
       effect: params.effect,
       allowPaidFloodskip: params.allowPaidFloodskip,
-      allowPaidStars: params.allowPaidMessages
+      allowPaidStars: params.allowPaidMessages,
+      suggestedPost,
+      scheduleRepeatPeriod: params.scheduleRepeatPeriod
     },
     {
       chainId,
@@ -91214,40 +94142,12 @@ async function sendText(client, chatId, text, params) {
       replyMarkup,
       media: res.media,
       entities: res.entities,
-      ttlPeriod: res.ttlPeriod
+      ttlPeriod: res.ttlPeriod,
+      suggestedPost
     };
     if (!params.shouldDispatch) {
       client.handleClientUpdate(createDummyUpdate(res.pts, res.ptsCount));
     }
-    const peers = new PeersIndex();
-    const fetchPeer = async (peer2) => {
-      const id = getMarkedPeerId(peer2);
-      let cached = await client.storage.peers.getCompleteById(id);
-      if (!cached) {
-        cached = await _getRawPeerBatched(client, await resolvePeer(client, peer2));
-      }
-      if (!cached) {
-        throw new MtTypeAssertionError("sendText (@ getFullPeerById)", "user | chat", "null");
-      }
-      switch (cached._) {
-        case "user":
-          peers.users.set(cached.id, cached);
-          break;
-        case "chat":
-        case "chatForbidden":
-        case "channel":
-        case "channelForbidden":
-          peers.chats.set(cached.id, cached);
-          break;
-        default:
-          throw new MtTypeAssertionError(
-            "sendText (@ users.getUsers)",
-            "user | chat | channel",
-            // not very accurate, but good enough
-            cached._
-          );
-      }
-    };
     const peersToFetch = [peer, msg2.fromId];
     if (savedPeerId) peersToFetch.push(savedPeerId);
     if (replyToHeader?._ === "messageReplyHeader" && replyToHeader.replyToPeerId) {
@@ -91255,11 +94155,20 @@ async function sendText(client, chatId, text, params) {
     } else if (replyToHeader?._ === "messageReplyStoryHeader") {
       peersToFetch.push(replyToHeader.peer);
     }
-    await Promise.all(peersToFetch.map(fetchPeer));
-    if (replyToHeader?._ === "messageReplyHeader" && replyToHeader.replyToTopId && replyToHeader.replyToTopId !== 1 && msg2.peerId._ === "peerChannel") {
-      const chat = peers.chats.get(msg2.peerId.channelId);
-      if (chat?._ === "channel" && chat.forum) {
-        replyToHeader.forumTopic = true;
+    const peers = await _buildPeersIndex(client, peersToFetch);
+    if (replyToHeader?._ === "messageReplyHeader" && replyToHeader.replyToTopId && replyToHeader.replyToTopId !== 1) {
+      if (msg2.peerId._ === "peerChannel") {
+        const chat = peers.chats.get(msg2.peerId.channelId);
+        if (chat?._ === "channel" && chat.forum) {
+          replyToHeader.forumTopic = true;
+        }
+      } else if (msg2.peerId._ === "peerUser") {
+        const isSelfBot = client.storage.self.getCached(true)?.isBot ?? false;
+        const peerUser = peers.users.get(msg2.peerId.userId);
+        const isPeerBot = peerUser?._ === "user" && (peerUser.bot ?? false);
+        if (isSelfBot || isPeerBot) {
+          replyToHeader.forumTopic = true;
+        }
       }
     }
     const ret = new Message$2(msg2, peers);
@@ -91297,16 +94206,22 @@ function answerMediaGroup(client, message, ...params) {
 function replyText(client, message, ...params) {
   const [text, params_ = {}] = params;
   params_.replyTo = message.id;
+  const threadId = message.replyToMessage?.threadId;
+  if (threadId) params_.threadId = threadId;
   return sendText(client, message.chat.inputPeer, text, params_);
 }
 function replyMedia(client, message, ...params) {
   const [media, params_ = {}] = params;
   params_.replyTo = message.id;
+  const threadId = message.replyToMessage?.threadId;
+  if (threadId) params_.threadId = threadId;
   return sendMedia(client, message.chat.inputPeer, media, params_);
 }
 function replyMediaGroup(client, message, ...params) {
   const [media, params_ = {}] = params;
   params_.replyTo = message.id;
+  const threadId = message.replyToMessage?.threadId;
+  if (threadId) params_.threadId = threadId;
   return sendMediaGroup(client, message.chat.inputPeer, media, params_);
 }
 
@@ -91444,10 +94359,10 @@ async function sendPaidReaction(client, params) {
   if (!res) {
     throw new MtcuteError("Could not send paid reaction");
   }
-  assertIsUpdatesGroup("messages.sendReaction", res);
+  assertIsUpdatesGroup(res);
   const peers = PeersIndex.from(res);
   const upd = res.updates[0];
-  assertTypeIs("messages.sendPaidReaction (@ .updates[0])", upd, "updateMessageReactions");
+  assertTypeIs(upd, "updateMessageReactions");
   return new MessageReactions$2(upd.msgId, getMarkedPeerId(upd.peer), upd.reactions, peers);
 }
 
@@ -91509,7 +94424,7 @@ async function sendReaction(client, params) {
     reaction: reactions,
     big
   });
-  assertIsUpdatesGroup("messages.sendReaction", res);
+  assertIsUpdatesGroup(res);
   return _findMessageInUpdate(client, res, true, !params.shouldDispatch, true);
 }
 
@@ -91538,7 +94453,9 @@ async function sendRichMessage(client, chatId, params) {
       effect: params.effect,
       allowPaidFloodskip: params.allowPaidFloodskip,
       allowPaidStars: params.allowPaidMessages,
-      richMessage
+      richMessage,
+      suggestedPost: _normalizeInputSuggestedPost(params.suggestedPost),
+      scheduleRepeatPeriod: params.scheduleRepeatPeriod
     },
     {
       chainId,
@@ -91556,7 +94473,7 @@ async function sendScheduled(client, peer, ids) {
     peer: await resolvePeer(client, peer),
     id: ids
   });
-  assertIsUpdatesGroup("sendScheduled", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, true);
   const peers = PeersIndex.from(res);
   const msgs = res.updates.filter(
@@ -91584,7 +94501,7 @@ async function sendVote(client, params) {
     options = options.map((opt) => {
       if (typeof opt === "number") {
         const answer = poll.raw.answers[opt];
-        assertTypeIsNot("Poll.answers", answer, "inputPollAnswer");
+        assertTypeIsNot(answer, "inputPollAnswer");
         return answer.option;
       }
       return opt;
@@ -91596,15 +94513,39 @@ async function sendVote(client, params) {
     msgId: message,
     options
   });
-  assertIsUpdatesGroup("messages.sendVote", res);
-  client.handleClientUpdate(res, true);
-  const upd = res.updates[0];
-  assertTypeIs("messages.sendVote (@ .updates[0])", upd, "updateMessagePoll");
-  if (!upd.poll) {
-    throw new MtTypeAssertionError("messages.sendVote (@ .updates[0].poll)", "poll", "undefined");
-  }
-  const peers = PeersIndex.from(res);
-  return new Poll$2(upd.poll, peers, upd.results);
+  return _findPollInUpdate(client, res, true, poll);
+}
+
+async function stopBotDraft(client, chatId, draftId, params) {
+  const r = await client.call({
+    _: "messages.setTyping",
+    peer: await resolvePeer(client, chatId),
+    action: { _: "sendMessageStopDraftAction", randomId: draftId },
+    topMsgId: params?.threadId
+  });
+  assertTrue("messages.setTyping", r);
+}
+
+async function approveSuggestedPost(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const res = await client.call({
+    _: "messages.toggleSuggestedPostApproval",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    scheduleDate: normalizeDate(params.scheduleDate)
+  });
+  client.handleClientUpdate(res, !params.shouldDispatch);
+}
+async function declineSuggestedPost(client, params) {
+  const { chatId, message } = normalizeInputMessageId(params);
+  const res = await client.call({
+    _: "messages.toggleSuggestedPostApproval",
+    peer: await resolvePeer(client, chatId),
+    msgId: message,
+    reject: true,
+    rejectComment: params.comment
+  });
+  client.handleClientUpdate(res, !params.shouldDispatch);
 }
 
 async function toggleTodoCompleted(client, params) {
@@ -91621,13 +94562,14 @@ async function toggleTodoCompleted(client, params) {
 }
 
 async function translateMessage(client, params) {
-  const { toLanguage } = params;
+  const { toLanguage, tone } = params;
   const { chatId, message } = normalizeInputMessageId(params);
   const res = await client.call({
     _: "messages.translateText",
     peer: await resolvePeer(client, chatId),
     id: [message],
-    toLang: toLanguage
+    toLang: toLanguage,
+    tone
   });
   return {
     text: res.result[0].text,
@@ -91635,7 +94577,7 @@ async function translateMessage(client, params) {
   };
 }
 
-async function translateText(client, text, toLanguage) {
+async function translateText(client, text, toLanguage, params) {
   const [message, entities] = await _normalizeInputText(client, text);
   const res = await client.call({
     _: "messages.translateText",
@@ -91646,10 +94588,11 @@ async function translateText(client, text, toLanguage) {
         entities: entities || []
       }
     ],
-    toLang: toLanguage
+    toLang: toLanguage,
+    tone: params?.tone
   });
   if (!res.result[0]) {
-    throw new MtTypeAssertionError("messages.translateResult#result", "not empty", "empty");
+    throw new MtcuteError("Translation result is empty");
   }
   return {
     text: res.result[0].text,
@@ -91658,12 +94601,13 @@ async function translateText(client, text, toLanguage) {
 }
 
 async function unpinAllMessages(client, chatId, params) {
-  const { topicId, shouldDispatch } = params ?? {};
+  const { topicId, topicPeer, shouldDispatch } = params ?? {};
   const peer = await resolvePeer(client, chatId);
   const res = await client.call({
     _: "messages.unpinAllMessages",
     peer,
-    topMsgId: topicId
+    topMsgId: topicId,
+    savedPeerId: topicPeer ? await resolvePeer(client, topicPeer) : void 0
   });
   if (!shouldDispatch) {
     if (isInputPeerChannel(peer)) {
@@ -91898,7 +94842,7 @@ async function enableCloudPassword(client, params) {
     throw new MtArgumentError("Cloud password is already enabled");
   }
   const algo = pwd.newAlgo;
-  assertTypeIs("account.getPassword", algo, "passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow");
+  assertTypeIs(algo, "passwordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow");
   const newHash = await client.computeNewPasswordHash(algo, password);
   await client.call({
     _: "account.updatePasswordSettings",
@@ -91978,7 +94922,7 @@ class BoostSlot {
    */
   get chat() {
     if (!this.raw.peer) return null;
-    assertTypeIs("BoostSlot.chat", this.raw.peer, "peerChannel");
+    assertTypeIs(this.raw.peer, "peerChannel");
     return new Chat$2(this._peers.chat(this.raw.peer.channelId));
   }
   /**
@@ -92313,9 +95257,9 @@ async function getBusinessConnection(client, connectionId) {
     _: "account.getBotBusinessConnection",
     connectionId
   });
-  assertIsUpdatesGroup("account.getBotBusinessConnection", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res);
-  assertTypeIs("account.getBotBusinessConnection", res.updates[0], "updateBotBusinessConnect");
+  assertTypeIs(res.updates[0], "updateBotBusinessConnect");
   const peers = PeersIndex.from(res);
   return new BusinessConnection$2(res.updates[0].connection, peers);
 }
@@ -92618,21 +95562,25 @@ async function* iterStarsTransactions(client, peerId, params) {
   }
 }
 
+function _normalizeInputDocumentId(id) {
+  if (isFileIdLike(id)) {
+    return fileIdToInputDocument(id);
+  }
+  return id;
+}
 async function _normalizeFileToDocument(client, file, params) {
   if (typeof file === "object" && isAnyInputDocument(file)) {
     return file;
   }
+  const isMedia = typeof file === "object" && "type" in file && "file" in file;
   const media = await _normalizeInputMedia(
     client,
-    {
-      type: "document",
-      file
-    },
+    isMedia ? file : { type: "document", file },
     params,
     true
   );
-  assertTypeIs("_normalizeFileToDocument", media, "inputMediaDocument");
-  assertTypeIs("_normalizeFileToDocument", media.id, "inputDocument");
+  assertTypeIs(media, "inputMediaDocument");
+  assertTypeIs(media.id, "inputDocument");
   return media.id;
 }
 
@@ -92646,7 +95594,7 @@ async function setBusinessIntro(client, intro) {
     if (intro.sticker) {
       if (isInputMediaSticker(intro.sticker)) {
         const media = await _normalizeInputMedia(client, intro.sticker, void 0, true);
-        assertTypeIs("_normalizeInputMedia", media, "inputMediaDocument");
+        assertTypeIs(media, "inputMediaDocument");
         sticker = media.id;
       } else {
         sticker = await _normalizeFileToDocument(client, intro.sticker, {});
@@ -92736,12 +95684,9 @@ async function createStickerSet(client, params) {
 }
 
 async function deleteStickerFromSet(client, sticker) {
-  if (isFileIdLike(sticker)) {
-    sticker = fileIdToInputDocument(sticker);
-  }
   const res = await client.call({
     _: "stickers.removeStickerFromSet",
-    sticker
+    sticker: _normalizeInputDocumentId(sticker)
   });
   return new StickerSet$2(res);
 }
@@ -92781,7 +95726,7 @@ async function getInstalledStickers(client) {
     _: "messages.getAllStickers",
     hash: Long.ZERO
   });
-  assertTypeIs("getInstalledStickers", res, "messages.allStickers");
+  assertTypeIs(res, "messages.allStickers");
   return res.sets.map((set) => new StickerSet$2(set));
 }
 
@@ -92805,24 +95750,18 @@ async function getStickerSet(client, setId) {
 }
 
 async function moveStickerInSet(client, sticker, position) {
-  if (isFileIdLike(sticker)) {
-    sticker = fileIdToInputDocument(sticker);
-  }
   const res = await client.call({
     _: "stickers.changeStickerPosition",
-    sticker,
+    sticker: _normalizeInputDocumentId(sticker),
     position
   });
   return new StickerSet$2(res);
 }
 
 async function replaceStickerInSet(client, sticker, newSticker, params) {
-  if (isFileIdLike(sticker)) {
-    sticker = fileIdToInputDocument(sticker);
-  }
   const res = await client.call({
     _: "stickers.replaceSticker",
-    sticker,
+    sticker: _normalizeInputDocumentId(sticker),
     newSticker: await _normalizeInputStickerSetItem(client, newSticker, params)
   });
   return new StickerSet$2(res);
@@ -92875,19 +95814,19 @@ async function deleteStories(client, params) {
 }
 
 function _findStoryInUpdate(client, res) {
-  assertIsUpdatesGroup("_findStoryInUpdate", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, true);
   const peers = PeersIndex.from(res);
   const updateStory = res.updates.find(hasValueAtKey("_", "updateStory"));
   if (!updateStory) {
-    throw new MtTypeAssertionError("_findStoryInUpdate (@ .updates[*])", "updateStory", "none");
+    throw new MtcuteError("Response does not contain updateStory");
   }
-  assertTypeIs("updateStory.story", updateStory.story, "storyItem");
+  assertTypeIs(updateStory.story, "storyItem");
   return new Story$2(updateStory.story, peers);
 }
 
 async function editStory(client, params) {
-  const { id, peer = "me", interactiveElements } = params;
+  const { id, peer = "me", interactiveElements, music } = params;
   let caption;
   let entities;
   let media;
@@ -92909,7 +95848,8 @@ async function editStory(client, params) {
     mediaAreas: interactiveElements,
     caption,
     entities,
-    privacyRules
+    privacyRules,
+    music: music ? await _normalizeFileToDocument(client, music, { uploadPeer: { _: "inputPeerSelf" } }) : void 0
   });
   return _findStoryInUpdate(client, res);
 }
@@ -92971,7 +95911,7 @@ async function getAllStories(client, params) {
     next: Boolean(offset),
     hidden: archived
   });
-  assertTypeIsNot("getAllStories", res, "stories.allStoriesNotModified");
+  assertTypeIsNot(res, "stories.allStoriesNotModified");
   return new AllStories$2(res);
 }
 
@@ -93120,11 +96060,11 @@ async function hideMyStoriesViews(client, params) {
     past,
     future
   });
-  assertIsUpdatesGroup("hideMyStoriesViews", res);
+  assertIsUpdatesGroup(res);
   client.handleClientUpdate(res, true);
   const upd = res.updates.find(hasValueAtKey("_", "updateStoriesStealthMode"));
   if (!upd) {
-    throw new MtTypeAssertionError("hideMyStoriesViews (@ res.updates[*])", "updateStoriesStealthMode", "none");
+    throw new MtcuteError("Response does not contain updateStoriesStealthMode");
   }
   return new StoriesStealthMode$1(upd.stealthMode);
 }
@@ -93222,7 +96162,7 @@ async function sendStoryReaction(client, params) {
 }
 
 async function sendStory(client, params) {
-  const { peer = "me", pinned, forbidForwards, interactiveElements, period, addToAlbums } = params;
+  const { peer = "me", pinned, forbidForwards, interactiveElements, period, addToAlbums, music } = params;
   let { media } = params;
   if (typeof media === "string") {
     media = {
@@ -93250,7 +96190,8 @@ async function sendStory(client, params) {
     privacyRules,
     randomId: randomLong(),
     period,
-    albums: addToAlbums
+    albums: addToAlbums,
+    music: music ? await _normalizeFileToDocument(client, music, { uploadPeer: { _: "inputPeerSelf" } }) : void 0
   });
   return _findStoryInUpdate(client, res);
 }
@@ -93468,6 +96409,16 @@ async function getProfilePhotos(client, userId, params) {
   );
 }
 
+function parseSavedMusic(documents) {
+  const files = [];
+  for (const file of documents) {
+    if (file._ !== "document") continue;
+    const doc = parseDocument(file);
+    assert(doc.type === "audio");
+    files.push(doc);
+  }
+  return files;
+}
 async function getSavedMusic(client, params) {
   const res = await client.call({
     _: "users.getSavedMusic",
@@ -93476,15 +96427,8 @@ async function getSavedMusic(client, params) {
     limit: params.limit ?? 100,
     hash: Long.ZERO
   });
-  assertTypeIsNot("getSavedMusic", res, "users.savedMusicNotModified");
-  const files = [];
-  for (const file of res.documents) {
-    if (file._ !== "document") continue;
-    assertTypeIs("getSavedMusic", file, "document");
-    const doc = parseDocument(file);
-    assert(doc.type === "audio");
-    files.push(doc);
-  }
+  assertTypeIsNot(res, "users.savedMusicNotModified");
+  const files = parseSavedMusic(res.documents);
   let nextOffset = (params.offset ?? 0) + files.length;
   if (nextOffset >= res.count) nextOffset = void 0;
   return makeArrayPaginated(
@@ -93492,6 +96436,23 @@ async function getSavedMusic(client, params) {
     res.count ?? files.length,
     nextOffset
   );
+}
+async function getSavedMusicById(client, params) {
+  const res = await client.call({
+    _: "users.getSavedMusicByID",
+    id: await resolveUser(client, params.userId),
+    documents: params.ids.map(_normalizeInputDocumentId)
+  });
+  assertTypeIsNot(res, "users.savedMusicNotModified");
+  return parseSavedMusic(res.documents);
+}
+async function getSavedMusicIds(client) {
+  const res = await client.call({
+    _: "account.getSavedMusicIds",
+    hash: Long.ZERO
+  });
+  assertTypeIsNot(res, "account.savedMusicIdsNotModified");
+  return res.ids;
 }
 
 async function getUsers(client, ids) {
@@ -93556,43 +96517,20 @@ async function* iterProfilePhotos(client, userId, params) {
 }
 
 async function saveMusicToProfile(client, params) {
-  let after = params.after;
-  if (isFileIdLike(after)) {
-    after = fileIdToInputDocument(after);
-  }
-  let audio = params.audio;
-  if (isFileIdLike(audio)) {
-    audio = {
-      type: "audio",
-      file: audio
-    };
-  }
-  let audioId;
-  if (isAnyInputDocument(audio)) {
-    audioId = audio;
-  } else {
-    const media = await _normalizeInputMedia(client, audio, {
-      progressCallback: params.progressCallback,
-      uploadPeer: { _: "inputPeerSelf" }
-    }, true);
-    assert(media._ === "inputMediaDocument");
-    audioId = media.id;
-  }
   const res = await client.call({
     _: "account.saveMusic",
-    id: audioId,
-    afterId: after
+    id: await _normalizeFileToDocument(client, params.audio, {
+      progressCallback: params.progressCallback,
+      uploadPeer: { _: "inputPeerSelf" }
+    }),
+    afterId: params.after ? _normalizeInputDocumentId(params.after) : void 0
   });
   assertTrue("account.saveMusic", res);
 }
 async function unsaveMusicFromProfile(client, params) {
-  let audio = params.audio;
-  if (isFileIdLike(audio)) {
-    audio = fileIdToInputDocument(audio);
-  }
   const res = await client.call({
     _: "account.saveMusic",
-    id: audio,
+    id: _normalizeInputDocumentId(params.audio),
     unsave: true
   });
   assertTrue("account.saveMusic", res);
@@ -93681,7 +96619,7 @@ async function setMyProfilePhoto(client, params) {
         _: "photos.updateProfilePhoto",
         id: media
       });
-      assertTypeIs("photos.updateProfilePhoto", res2.photo, "photo");
+      assertTypeIs(res2.photo, "photo");
       return new Photo$2(res2.photo);
     }
   }
@@ -93690,7 +96628,7 @@ async function setMyProfilePhoto(client, params) {
     [type === "photo" ? "file" : "video"]: await _normalizeInputFile(client, media, {}),
     videoStartTs: previewSec
   });
-  assertTypeIs("photos.updateProfilePhoto", res.photo, "photo");
+  assertTypeIs(res.photo, "photo");
   return new Photo$2(res.photo);
 }
 
@@ -94007,7 +96945,7 @@ class Conversation {
       check: filter,
       timeout: timer
     });
-    this._processPendingNewMessages();
+    void this._processPendingNewMessages();
     return promise.promise;
   }
   /**
@@ -94111,24 +97049,8 @@ class Conversation {
   }
   _onNewMessage(msg) {
     if (msg.chat.id !== this._chatId) return;
-    if (!this._queuedNewMessage.length) {
-      this._pendingNewMessages.pushBack(msg);
-      return;
-    }
-    const it = this._queuedNewMessage.peekFront();
-    void this._lock.acquire().then(async () => {
-      try {
-        if (!it.check || await it.check(msg)) {
-          if (it.timeout) clearTimeoutWrap(it.timeout);
-          it.promise.resolve(msg);
-          this._queuedNewMessage.popFront();
-        }
-      } catch (e) {
-        this.client.onError.emit(unknownToError(e));
-      }
-      this._lastMessage = this._lastReceivedMessage = msg.id;
-      this._lock.release();
-    });
+    this._pendingNewMessages.pushBack(msg);
+    void this._processPendingNewMessages();
   }
   _onEditMessage(msg, fromRecent = false) {
     if (msg.chat.id !== this._chatId) return;
@@ -94161,11 +97083,30 @@ class Conversation {
       }
     }
   }
-  _processPendingNewMessages() {
-    if (!this._pendingNewMessages.length) return;
-    let it;
-    while (it = this._pendingNewMessages.popFront()) {
-      this._onNewMessage(it);
+  async _processPendingNewMessages() {
+    const guard = await this._lock.acquire();
+    try {
+      let it;
+      let msg;
+      while ((it = this._queuedNewMessage.peekFront()) && (msg = this._pendingNewMessages.peekFront())) {
+        let matches = false;
+        try {
+          matches = !it.check || await it.check(msg);
+        } catch (e) {
+          this.client.onError.emit(unknownToError(e));
+        }
+        if (this._pendingNewMessages.peekFront() !== msg) break;
+        if (this._queuedNewMessage.peekFront() !== it) continue;
+        this._pendingNewMessages.popFront();
+        this._lastMessage = this._lastReceivedMessage = msg.id;
+        if (matches) {
+          if (it.timeout) clearTimeoutWrap(it.timeout);
+          it.promise.resolve(msg);
+          this._queuedNewMessage.popFront();
+        }
+      }
+    } finally {
+      guard.release();
     }
   }
   _processRecentEdits() {
@@ -94190,9 +97131,17 @@ class EphemeralCallbackQuery {
   get user() {
     return new User$2(this._peers.user(this.raw.userId));
   }
-  /** Chat where the originating ephemeral message was sent */
+  /**
+   * Chat where the originating ephemeral message was sent.
+   *
+   * `null` if not available (see {@link chatInstance})
+   */
   get chat() {
-    return parsePeer(this.raw.peer, this._peers);
+    return this.raw.peer ? parsePeer(this.raw.peer, this._peers) : null;
+  }
+  /** Identifier uniquely corresponding to the chat the message was sent to, if any */
+  get chatInstance() {
+    return this.raw.chatInstance ?? null;
   }
   /** Identifier of the ephemeral message containing the button which was clicked */
   get messageId() {
@@ -94271,6 +97220,13 @@ class BotChatJoinRequestUpdate {
    */
   get invite() {
     return new ChatInviteLink$2(this.raw.invite);
+  }
+  /**
+   * If the bot is a guard bot of the chat, ID of the join query,
+   * which should be answered with {@link TelegramClient.answerChatJoinRequestQuery}
+   */
+  get queryId() {
+    return this.raw.queryId ?? null;
   }
 }
 const BotChatJoinRequestUpdate$1 = /* @__PURE__ */ memoizeGetters(BotChatJoinRequestUpdate, ["chat", "user", "invite"]);
@@ -94411,6 +97367,37 @@ class BotStoppedUpdate {
 }
 const BotStoppedUpdate$1 = /* @__PURE__ */ memoizeGetters(BotStoppedUpdate, ["user"]);
 const BotStoppedUpdate$2 = /* @__PURE__ */ makeInspectable(BotStoppedUpdate$1);
+
+class BotSubscriptionUpdate {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** ID of the user whose subscription has changed */
+  get userId() {
+    return this.raw.userId;
+  }
+  /** User whose subscription has changed */
+  get user() {
+    return new User$2(this._peers.user(this.raw.userId));
+  }
+  /**
+   * Bot-defined payload of the subscription invoice
+   * (see {@link InputMediaInvoice.payload})
+   */
+  get payload() {
+    return this.raw.payload;
+  }
+  /** New status of the subscription */
+  get status() {
+    if (this.raw.canceled) return "canceled";
+    if (this.raw.restored) return "restored";
+    if (this.raw.paymentFailed) return "payment_failed";
+    throw new MtcuteError("updateBotStarsSubscription has none of canceled | restored | paymentFailed");
+  }
+}
+const BotSubscriptionUpdate$1 = /* @__PURE__ */ memoizeGetters(BotSubscriptionUpdate, ["user"]);
+const BotSubscriptionUpdate$2 = /* @__PURE__ */ makeInspectable(BotSubscriptionUpdate$1);
 
 class BusinessMessage extends Message$2 {
   constructor(update, _peers) {
@@ -94595,6 +97582,52 @@ class ChatJoinRequestUpdate {
 }
 const ChatJoinRequestUpdate$1 = /* @__PURE__ */ memoizeGetters(ChatJoinRequestUpdate, ["recentRequesters"]);
 const ChatJoinRequestUpdate$2 = /* @__PURE__ */ makeInspectable(ChatJoinRequestUpdate$1);
+
+class ChatJoinResultUpdate {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** ID of the join query, as returned by {@link TelegramClient.joinChat} */
+  get queryId() {
+    return this.raw.queryId;
+  }
+  /** Marked ID of the chat the user was requesting to join */
+  get chatId() {
+    return getMarkedPeerId(this.raw.peer);
+  }
+  /** The chat the user was requesting to join, if available */
+  get chat() {
+    if (!this._peers.has(this.raw.peer)) return null;
+    return new Chat$2(this._peers.chat(getBarePeerId(this.raw.peer)));
+  }
+  /**
+   * Decision of the guard bot
+   *
+   * - `approved` - the user has joined the chat
+   * - `declined` - the request was declined
+   * - `queued` - the request was sent to chat admins for review
+   * - `webview` - the user must open the bot's mini app (see {@link webviewUrl})
+   */
+  get result() {
+    switch (this.raw.result._) {
+      case "joinChatBotResultApproved":
+        return "approved";
+      case "joinChatBotResultDeclined":
+        return "declined";
+      case "joinChatBotResultQueued":
+        return "queued";
+      case "joinChatBotResultWebView":
+        return "webview";
+    }
+  }
+  /** If {@link result} is `webview`, URL of the mini app to open */
+  get webviewUrl() {
+    return this.raw.result._ === "joinChatBotResultWebView" ? this.raw.result.url : null;
+  }
+}
+const ChatJoinResultUpdate$1 = /* @__PURE__ */ memoizeGetters(ChatJoinResultUpdate, ["chat"]);
+const ChatJoinResultUpdate$2 = /* @__PURE__ */ makeInspectable(ChatJoinResultUpdate$1);
 
 function extractPeerId(raw) {
   if (!raw) return 0;
@@ -95072,6 +98105,31 @@ class InlineQuery {
 const InlineQuery$1 = /* @__PURE__ */ memoizeGetters(InlineQuery, ["user", "location"]);
 const InlineQuery$2 = /* @__PURE__ */ makeInspectable(InlineQuery$1);
 
+class ManagedBotUpdate {
+  constructor(raw, _peers) {
+    this.raw = raw;
+    this._peers = _peers;
+  }
+  /** ID of the user who created the bot */
+  get userId() {
+    return this.raw.userId;
+  }
+  /** User who created the bot */
+  get user() {
+    return new User$2(this._peers.user(this.raw.userId));
+  }
+  /** ID of the managed bot */
+  get botId() {
+    return this.raw.botId;
+  }
+  /** The managed bot */
+  get bot() {
+    return new User$2(this._peers.user(this.raw.botId));
+  }
+}
+const ManagedBotUpdate$1 = /* @__PURE__ */ memoizeGetters(ManagedBotUpdate, ["user", "bot"]);
+const ManagedBotUpdate$2 = /* @__PURE__ */ makeInspectable(ManagedBotUpdate$1);
+
 class PollUpdate {
   constructor(raw, _peers) {
     this.raw = raw;
@@ -95082,6 +98140,18 @@ class PollUpdate {
    */
   get pollId() {
     return this.raw.pollId;
+  }
+  /** Chat containing the message with the poll, if available */
+  get chat() {
+    return this.raw.peer ? parsePeer(this.raw.peer, this._peers) : null;
+  }
+  /** ID of the message containing the poll, if available */
+  get messageId() {
+    return this.raw.msgId ?? null;
+  }
+  /** ID of the thread (topic) containing the message with the poll, if available */
+  get threadId() {
+    return this.raw.topMsgId ?? null;
   }
   /**
    * Whether this is a shortened version of update, not containing the poll itself.
@@ -95126,7 +98196,7 @@ class PollUpdate {
     return new Poll$2(poll, this._peers, this.raw.results);
   }
 }
-const PollUpdate$1 = /* @__PURE__ */ memoizeGetters(PollUpdate, ["poll"]);
+const PollUpdate$1 = /* @__PURE__ */ memoizeGetters(PollUpdate, ["poll", "chat"]);
 const PollUpdate$2 = /* @__PURE__ */ makeInspectable(PollUpdate$1);
 
 class PollVoteUpdate {
@@ -95172,22 +98242,11 @@ class PollVoteUpdate {
     return this.raw.options;
   }
   /**
-   * Indexes of the chosen answers, derived based on observations
-   * described in {@link chosen}.
-   * This might break at any time, but seems to be consistent for now.
-   *
-   * If something does not add up, {@link MtUnsupportedError} is thrown
+   * Indexes of the answers that the user has chosen
+   * (0-based, in the order of {@link Poll.answers})
    */
-  get chosenIndexesAuto() {
-    return this.raw.options.map((buf) => {
-      if (buf.length > 1) {
-        throw new MtUnsupportedError("option had >1 byte");
-      }
-      if (buf[0] < 48 || buf[0] > 57) {
-        throw new MtUnsupportedError("option had first byte out of 0-9 range");
-      }
-      return buf[0] - 48;
-    });
+  get chosenIndexes() {
+    return this.raw.positions;
   }
 }
 const PollVoteUpdate$1 = /* @__PURE__ */ memoizeGetters(PollVoteUpdate, ["peer"]);
@@ -95261,7 +98320,7 @@ class StoryUpdate {
    * Story that was posted or edited.
    */
   get story() {
-    assertTypeIs("StoryUpdate.story", this.raw.story, "storyItem");
+    assertTypeIs(this.raw.story, "storyItem");
     return new Story$2(this.raw.story, this._peers);
   }
 }
@@ -95399,9 +98458,27 @@ class UserTypingUpdate {
         return "interaction";
       case "sendMessageEmojiInteractionSeen":
         return "interaction_seen";
+      case "sendMessageStopDraftAction":
+        return "stop_draft";
       default:
         assertNever$1(this.raw.action);
     }
+  }
+  /**
+   * ID of the draft this update is related to, if any
+   * (i.e. the status is `typing` for a draft action, or `stop_draft`)
+   */
+  get draftId() {
+    const action = this.raw.action;
+    return "randomId" in action ? action.randomId : null;
+  }
+  /** Whether the ongoing draft streaming may be stopped by the user */
+  get canStopDraft() {
+    return "canStop" in this.raw.action ? this.raw.action.canStop : false;
+  }
+  /** Whether the draft should be kept once the user stops the streaming */
+  get keepDraftOnStop() {
+    return "keepOnStop" in this.raw.action ? this.raw.action.keepOnStop : false;
   }
 }
 const UserTypingUpdate$1 = /* @__PURE__ */ makeInspectable(UserTypingUpdate);
@@ -95453,10 +98530,16 @@ function _parseUpdate({ update, peers }) {
       return { name: "history_read", data: new HistoryReadUpdate$1(update) };
     case "updateBotStopped":
       return { name: "bot_stopped", data: new BotStoppedUpdate$2(update, peers) };
+    case "updateBotStarsSubscription":
+      return { name: "bot_subscription", data: new BotSubscriptionUpdate$2(update, peers) };
     case "updateBotChatInviteRequester":
       return { name: "bot_chat_join_request", data: new BotChatJoinRequestUpdate$2(update, peers) };
     case "updatePendingJoinRequests":
       return { name: "chat_join_request", data: new ChatJoinRequestUpdate$2(update, peers) };
+    case "updateJoinChatWebViewDecision":
+      return { name: "chat_join_result", data: new ChatJoinResultUpdate$2(update, peers) };
+    case "updateManagedBot":
+      return { name: "managed_bot", data: new ManagedBotUpdate$2(update, peers) };
     case "updateBotPrecheckoutQuery":
       return { name: "pre_checkout_query", data: new PreCheckoutQuery$2(update, peers) };
     case "updateStory": {
@@ -95557,8 +98640,11 @@ let TelegramClient$1 = class TelegramClient {
     this.onUserTyping = new Emitter();
     this.onHistoryRead = new Emitter();
     this.onBotStopped = new Emitter();
+    this.onBotSubscription = new Emitter();
     this.onBotChatJoinRequest = new Emitter();
     this.onChatJoinRequest = new Emitter();
+    this.onChatJoinResult = new Emitter();
+    this.onManagedBot = new Emitter();
     this.onPreCheckoutQuery = new Emitter();
     this.onStoryUpdate = new Emitter();
     this.onDeleteStory = new Emitter();
@@ -95654,11 +98740,20 @@ let TelegramClient$1 = class TelegramClient {
               case "bot_stopped":
                 this.onBotStopped.emit(update.data);
                 break;
+              case "bot_subscription":
+                this.onBotSubscription.emit(update.data);
+                break;
               case "bot_chat_join_request":
                 this.onBotChatJoinRequest.emit(update.data);
                 break;
               case "chat_join_request":
                 this.onChatJoinRequest.emit(update.data);
+                break;
+              case "chat_join_result":
+                this.onChatJoinResult.emit(update.data);
+                break;
+              case "managed_bot":
+                this.onManagedBot.emit(update.data);
                 break;
               case "pre_checkout_query":
                 this.onPreCheckoutQuery.emit(update.data);
@@ -95751,17 +98846,29 @@ TelegramClient$1.prototype.start = function(...args) {
 TelegramClient$1.prototype.isSelfPeer = function(...args) {
   return isSelfPeer(this._client, ...args);
 };
+TelegramClient$1.prototype.addBotUsername = function(...args) {
+  return addBotUsername(this._client, ...args);
+};
 TelegramClient$1.prototype.answerBotGuestChatQuery = function(...args) {
   return answerBotGuestChatQuery(this._client, ...args);
 };
 TelegramClient$1.prototype.answerCallbackQuery = function(...args) {
   return answerCallbackQuery(this._client, ...args);
 };
+TelegramClient$1.prototype.answerChatJoinRequestQuery = function(...args) {
+  return answerChatJoinRequestQuery(this._client, ...args);
+};
 TelegramClient$1.prototype.answerInlineQuery = function(...args) {
   return answerInlineQuery(this._client, ...args);
 };
 TelegramClient$1.prototype.answerPreCheckoutQuery = function(...args) {
   return answerPreCheckoutQuery(this._client, ...args);
+};
+TelegramClient$1.prototype.checkBotUsername = function(...args) {
+  return checkBotUsername(this._client, ...args);
+};
+TelegramClient$1.prototype.createBot = function(...args) {
+  return createBot(this._client, ...args);
 };
 TelegramClient$1.prototype.deleteMyCommands = function(...args) {
   return deleteMyCommands(this._client, ...args);
@@ -95781,8 +98888,20 @@ TelegramClient$1.prototype.getGameHighScores = function(...args) {
 TelegramClient$1.prototype.getInlineGameHighScores = function(...args) {
   return getInlineGameHighScores(this._client, ...args);
 };
+TelegramClient$1.prototype.getManagedBotAccessSettings = function(...args) {
+  return getManagedBotAccessSettings(this._client, ...args);
+};
+TelegramClient$1.prototype.getManagedBotToken = function(...args) {
+  return getManagedBotToken(this._client, ...args);
+};
 TelegramClient$1.prototype.getMyCommands = function(...args) {
   return getMyCommands(this._client, ...args);
+};
+TelegramClient$1.prototype.getPreparedKeyboardButton = function(...args) {
+  return getPreparedKeyboardButton(this._client, ...args);
+};
+TelegramClient$1.prototype.openJoinChatWebview = function(...args) {
+  return openJoinChatWebview(this._client, ...args);
 };
 TelegramClient$1.prototype.openWebview = function(...args) {
   return openWebview(this._client, ...args);
@@ -95792,6 +98911,12 @@ TelegramClient$1.prototype.closeWebview = function(...args) {
 };
 TelegramClient$1.prototype.prepareInlineMessage = function(...args) {
   return prepareInlineMessage(this._client, ...args);
+};
+TelegramClient$1.prototype.prepareKeyboardButton = function(...args) {
+  return prepareKeyboardButton(this._client, ...args);
+};
+TelegramClient$1.prototype.removeBotUsername = function(...args) {
+  return removeBotUsername(this._client, ...args);
 };
 TelegramClient$1.prototype.setBotInfo = function(...args) {
   return setBotInfo(this._client, ...args);
@@ -95804,6 +98929,9 @@ TelegramClient$1.prototype.setGameScore = function(...args) {
 };
 TelegramClient$1.prototype.setInlineGameScore = function(...args) {
   return setInlineGameScore(this._client, ...args);
+};
+TelegramClient$1.prototype.setManagedBotAccessSettings = function(...args) {
+  return setManagedBotAccessSettings(this._client, ...args);
 };
 TelegramClient$1.prototype.setMyCommands = function(...args) {
   return setMyCommands(this._client, ...args);
@@ -96018,11 +99146,17 @@ TelegramClient$1.prototype.addContact = function(...args) {
 TelegramClient$1.prototype.deleteContacts = function(...args) {
   return deleteContacts(this._client, ...args);
 };
+TelegramClient$1.prototype.exportNoPaidMessagesToken = function(...args) {
+  return exportNoPaidMessagesToken(this._client, ...args);
+};
 TelegramClient$1.prototype.getContacts = function(...args) {
   return getContacts(this._client, ...args);
 };
 TelegramClient$1.prototype.importContacts = function(...args) {
   return importContacts(this._client, ...args);
+};
+TelegramClient$1.prototype.importNoPaidMessagesToken = function(...args) {
+  return importNoPaidMessagesToken(this._client, ...args);
 };
 TelegramClient$1.prototype.setContactNote = function(...args) {
   return setContactNote(this._client, ...args);
@@ -96060,14 +99194,23 @@ TelegramClient$1.prototype.joinChatlist = function(...args) {
 TelegramClient$1.prototype.setFoldersOrder = function(...args) {
   return setFoldersOrder(this._client, ...args);
 };
+TelegramClient$1.prototype.deleteAllWelcomeMessages = function(...args) {
+  return deleteAllWelcomeMessages(this._client, ...args);
+};
 TelegramClient$1.prototype.deleteEphemeralMessage = function(...args) {
   return deleteEphemeralMessage(this._client, ...args);
+};
+TelegramClient$1.prototype.deleteWelcomeMessage = function(...args) {
+  return deleteWelcomeMessage(this._client, ...args);
 };
 TelegramClient$1.prototype.editEphemeralMessage = function(...args) {
   return editEphemeralMessage(this._client, ...args);
 };
 TelegramClient$1.prototype.getEphemeralCallbackAnswer = function(...args) {
   return getEphemeralCallbackAnswer(this._client, ...args);
+};
+TelegramClient$1.prototype.getWelcomeMessages = function(...args) {
+  return getWelcomeMessages(this._client, ...args);
 };
 TelegramClient$1.prototype.sendEphemeralMessage = function(...args) {
   return sendEphemeralMessage(this._client, ...args);
@@ -96141,6 +99284,9 @@ TelegramClient$1.prototype.acceptStarGift = function(...args) {
 TelegramClient$1.prototype.buyResaleGift = function(...args) {
   return buyResaleGift(this._client, ...args);
 };
+TelegramClient$1.prototype.displayStarGiftFromLinkedWallet = function(...args) {
+  return displayStarGiftFromLinkedWallet(this._client, ...args);
+};
 TelegramClient$1.prototype.getStarGiftResaleOptions = function(...args) {
   return getStarGiftResaleOptions(this._client, ...args);
 };
@@ -96149,6 +99295,9 @@ TelegramClient$1.prototype.getSavedStarGiftsById = function(...args) {
 };
 TelegramClient$1.prototype.getSavedStarGifts = function(...args) {
   return getSavedStarGifts(this._client, ...args);
+};
+TelegramClient$1.prototype.getStarGiftDepositInfo = function(...args) {
+  return getStarGiftDepositInfo(this._client, ...args);
 };
 TelegramClient$1.prototype.getStarGiftOptions = function(...args) {
   return getStarGiftOptions(this._client, ...args);
@@ -96192,6 +99341,9 @@ TelegramClient$1.prototype.transferStarGift = function(...args) {
 TelegramClient$1.prototype.upgradeStarGift = function(...args) {
   return upgradeStarGift(this._client, ...args);
 };
+TelegramClient$1.prototype.withdrawStarGiftToLinkedWallet = function(...args) {
+  return withdrawStarGiftToLinkedWallet(this._client, ...args);
+};
 TelegramClient$1.prototype.createInviteLink = function(...args) {
   return createInviteLink(this._client, ...args);
 };
@@ -96228,6 +99380,9 @@ TelegramClient$1.prototype.iterInviteLinks = function(...args) {
 TelegramClient$1.prototype.revokeInviteLink = function(...args) {
   return revokeInviteLink(this._client, ...args);
 };
+TelegramClient$1.prototype.addPollAnswer = function(...args) {
+  return addPollAnswer(this._client, ...args);
+};
 TelegramClient$1.prototype.appendTodoList = function(...args) {
   return appendTodoList(this._client, ...args);
 };
@@ -96245,6 +99400,15 @@ TelegramClient$1.prototype.deleteMessagesById = function(...args) {
 };
 TelegramClient$1.prototype.deleteMessages = function(...args) {
   return deleteMessages(this._client, ...args);
+};
+TelegramClient$1.prototype.deletePollAnswer = function(...args) {
+  return deletePollAnswer(this._client, ...args);
+};
+TelegramClient$1.prototype.deleteMessageReactionsFromSender = function(...args) {
+  return deleteMessageReactionsFromSender(this._client, ...args);
+};
+TelegramClient$1.prototype.deleteRecentReactionsFromSender = function(...args) {
+  return deleteRecentReactionsFromSender(this._client, ...args);
 };
 TelegramClient$1.prototype.deleteScheduledMessages = function(...args) {
   return deleteScheduledMessages(this._client, ...args);
@@ -96297,6 +99461,12 @@ TelegramClient$1.prototype.getMessagesUnsafe = function(...args) {
 TelegramClient$1.prototype.getMessages = function(...args) {
   return getMessages(this._client, ...args);
 };
+TelegramClient$1.prototype.getPollResults = function(...args) {
+  return getPollResults(this._client, ...args);
+};
+TelegramClient$1.prototype.getPollStats = function(...args) {
+  return getPollStats(this._client, ...args);
+};
 TelegramClient$1.prototype.getReactionUsers = function(...args) {
   return getReactionUsers(this._client, ...args);
 };
@@ -96305,6 +99475,9 @@ TelegramClient$1.prototype.getReplyTo = function(...args) {
 };
 TelegramClient$1.prototype.getScheduledMessages = function(...args) {
   return getScheduledMessages(this._client, ...args);
+};
+TelegramClient$1.prototype.getUnreadPollVotes = function(...args) {
+  return getUnreadPollVotes(this._client, ...args);
 };
 TelegramClient$1.prototype.getWebPagePreview = function(...args) {
   return getWebPagePreview(this._client, ...args);
@@ -96321,11 +99494,17 @@ TelegramClient$1.prototype.iterSearchGlobal = function(...args) {
 TelegramClient$1.prototype.iterSearchMessages = function(...args) {
   return iterSearchMessages(this._client, ...args);
 };
+TelegramClient$1.prototype.iterUnreadPollVotes = function(...args) {
+  return iterUnreadPollVotes(this._client, ...args);
+};
 TelegramClient$1.prototype.pinMessage = function(...args) {
   return pinMessage(this._client, ...args);
 };
 TelegramClient$1.prototype.readHistory = function(...args) {
   return readHistory(this._client, ...args);
+};
+TelegramClient$1.prototype.readPollVotes = function(...args) {
+  return readPollVotes(this._client, ...args);
 };
 TelegramClient$1.prototype.readReactions = function(...args) {
   return readReactions(this._client, ...args);
@@ -96416,6 +99595,15 @@ TelegramClient$1.prototype.sendVote = function(...args) {
 };
 TelegramClient$1.prototype.setTyping = function(...args) {
   return setTyping(this._client, ...args);
+};
+TelegramClient$1.prototype.stopBotDraft = function(...args) {
+  return stopBotDraft(this._client, ...args);
+};
+TelegramClient$1.prototype.approveSuggestedPost = function(...args) {
+  return approveSuggestedPost(this._client, ...args);
+};
+TelegramClient$1.prototype.declineSuggestedPost = function(...args) {
+  return declineSuggestedPost(this._client, ...args);
 };
 TelegramClient$1.prototype.toggleTodoCompleted = function(...args) {
   return toggleTodoCompleted(this._client, ...args);
@@ -96635,6 +99823,12 @@ TelegramClient$1.prototype.getProfilePhotos = function(...args) {
 };
 TelegramClient$1.prototype.getSavedMusic = function(...args) {
   return getSavedMusic(this._client, ...args);
+};
+TelegramClient$1.prototype.getSavedMusicById = function(...args) {
+  return getSavedMusicById(this._client, ...args);
+};
+TelegramClient$1.prototype.getSavedMusicIds = function(...args) {
+  return getSavedMusicIds(this._client, ...args);
 };
 TelegramClient$1.prototype.getUsers = function(...args) {
   return getUsers(this._client, ...args);
@@ -97379,10 +100573,9 @@ async function downloadToFile(client, filename, location, params) {
     });
   }
   try {
-    for await (const chunk of downloadAsIterable(client, location, params)) {
-      output.write(chunk);
-    }
-    output.end();
+    await pipeline(downloadAsIterable(client, location, params), output, {
+      signal: params?.abortSignal
+    });
   } catch (e) {
     output.destroy();
     throw e;
